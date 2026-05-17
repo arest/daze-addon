@@ -13,18 +13,18 @@
 
 ## Phase 2: Sensor Platform
 
-- [ ] Create `sensor.py` platform with coordinator integration
-- [ ] Add sensors with correct device classes and state classes:
+- [x] Create `sensor.py` platform with coordinator integration
+- [x] Add sensors with correct device classes and state classes:
   - Instant power (W) → `SensorDeviceClass.POWER`, `SensorStateClass.MEASUREMENT`
   - Delivered energy (Wh) → `SensorDeviceClass.ENERGY`, `SensorStateClass.TOTAL_INCREASING`
   - Charging current L1/L2/L3 (mA) → `SensorDeviceClass.CURRENT`, `SensorStateClass.MEASUREMENT`
   - AC voltage L1/L2/L3 (V) → `SensorDeviceClass.VOLTAGE`, `SensorStateClass.MEASUREMENT`
   - Board temperature (°C) → `SensorDeviceClass.TEMPERATURE`, `SensorStateClass.MEASUREMENT`
   - Case temperature (°C) → `SensorDeviceClass.TEMPERATURE`, `SensorStateClass.MEASUREMENT`
-- [ ] Add EVSE status sensor with `device_class = SensorDeviceClass.ENUM` and mapped state values (idle, charging, paused, error, etc.)
-- [ ] Add network-level diagnostic sensors with `entity_category = EntityCategory.DIAGNOSTIC`: grid max power, photovoltaic presence, three-phase status
-- [ ] Register all sensors under the wallbox device via `device_info`
-- [ ] Implement availability logic: entities become `unavailable` when coordinator update fails repeatedly
+- [x] Add EVSE status sensor with `device_class = SensorDeviceClass.ENUM` and mapped state values (idle, charging, paused, error, etc.)
+- [x] Add network-level diagnostic sensors with `entity_category = EntityCategory.DIAGNOSTIC`: grid max power, photovoltaic presence, three-phase status
+- [x] Register all sensors under the wallbox device via `device_info`
+- [x] Implement availability logic: entities become `unavailable` when coordinator update fails repeatedly
 
 ## Phase 3: Control Entities
 
