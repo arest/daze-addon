@@ -1,0 +1,12 @@
+{
+  "domain": "daze",
+  "name": "Daze Wallbox",
+  "codeowners": ["@andrea"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/andrea/daze-addon",
+  "integration_type": "device",
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "version": "0.1.0"
+}
