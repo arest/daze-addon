@@ -2,14 +2,14 @@
 
 ## Phase 1: Scaffold, Auth & Config Flow
 
-- [ ] Scaffold the `custom_components/daze/` package structure (`__init__.py`, `const.py`, `manifest.json`)
-- [ ] Implement the Cognito OAuth client: validate provided tokens, refresh access token using refresh token, handle token expiry and re-authentication
-- [ ] Build the minimal async API client class wrapping core Daze REST endpoints (user info, networks, EVSEs, sockets)
-- [ ] Implement the config flow (`config_flow.py`): step 1 (access token + refresh token entry), step 2 (network selection from available networks), step 3 (validation and setup)
-- [ ] Add re-authentication flow for expired refresh tokens (triggers when the client gets 401 on token refresh)
-- [ ] Define device registry entry (`async_setup_entry` creates/updates the device)
-- [ ] Add `strings.json` with config flow strings and entity translation base
-- [ ] Implement `DataUpdateCoordinator` with configurable polling interval and error handling (auth failure triggers re-auth flow, transient errors retry)
+- [x] Scaffold the `custom_components/daze/` package structure (`__init__.py`, `const.py`, `manifest.json`)
+- [x] Implement the Cognito OAuth client: validate provided tokens, refresh access token using refresh token, handle token expiry and re-authentication
+- [x] Build the minimal async API client class wrapping core Daze REST endpoints (user info, networks, EVSEs, sockets)
+- [x] Implement the config flow (`config_flow.py`): step 1 (access token + refresh token entry), step 2 (network selection from available networks), step 3 (validation and setup)
+- [x] Add re-authentication flow for expired refresh tokens (triggers when the client gets 401 on token refresh)
+- [x] Define device registry entry (`async_setup_entry` creates/updates the device)
+- [x] Add `strings.json` with config flow strings and entity translation base
+- [x] Implement `DataUpdateCoordinator` with configurable polling interval and error handling (auth failure triggers re-auth flow, transient errors retry)
 
 ## Phase 2: Sensor Platform
 
