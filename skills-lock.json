@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "home-assistant-best-practices": {
+      "source": "homeassistant-ai/skills",
+      "sourceType": "github",
+      "skillPath": "skills/home-assistant-best-practices/SKILL.md",
+      "computedHash": "c6a3b7fdd1fea8be019cd2f9156bb6c7df492c28f2dabfb78bdbb5a9a72393d1"
+    }
+  }
+}
