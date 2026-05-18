@@ -28,12 +28,12 @@
 
 ## Phase 3: Control Entities
 
-- [ ] Create `switch.py` — start/stop charge toggle entity using `SwitchEntity`
-- [ ] Create `number.py` — max charging current setter using `NumberEntity` with `native_min_value`/`native_max_value`/`native_step`
-- [ ] Create `select.py` — operation mode selector (eco, fast, scheduled, etc.) using `SelectEntity`
-- [ ] Wire controls through the API client with proper error handling
-- [ ] Invalidate coordinator data after each control command so sensors reflect the new state on next poll
-- [ ] Add `entity_category = EntityCategory.CONFIG` to the number entity (charging current limit is a configuration parameter)
+- [x] Create `switch.py` — start/stop charge toggle entity using `SwitchEntity`
+- [x] Create `number.py` — max charging current setter using `NumberEntity` with `native_min_value`/`native_max_value`/`native_step`
+- [x] Create `select.py` — operation mode selector (eco, fast, scheduled, etc.) using `SelectEntity`
+- [x] Wire controls through the API client with proper error handling
+- [x] Invalidate coordinator data after each control command so sensors reflect the new state on next poll
+- [x] Add `entity_category = EntityCategory.CONFIG` to the number entity (charging current limit is a configuration parameter)
 
 ## Phase 4: Recharge Sessions & Diagnostics
 
