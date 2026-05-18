@@ -158,6 +158,45 @@ SENSOR_DEFS: tuple[SensorDef, ...] = (
         entity_category="diagnostic",
         options=["on", "off"],
     ),
+    # --- Session sensors ---
+    SensorDef(
+        key="last_session_energy",
+        device_class="energy",
+        state_class="total_increasing",
+        native_unit_of_measurement="Wh",
+    ),
+    SensorDef(
+        key="last_session_duration",
+        native_unit_of_measurement="min",
+    ),
+    SensorDef(
+        key="last_session_cost",
+        device_class="monetary",
+        native_unit_of_measurement="EUR",
+    ),
+    SensorDef(
+        key="last_session_start",
+        device_class="timestamp",
+    ),
+    SensorDef(
+        key="last_session_end",
+        device_class="timestamp",
+    ),
+    SensorDef(
+        key="lifetime_energy",
+        device_class="energy",
+        state_class="total_increasing",
+        native_unit_of_measurement="Wh",
+    ),
+    SensorDef(
+        key="total_sessions",
+        state_class="total_increasing",
+    ),
+    SensorDef(
+        key="next_scheduled_charge",
+        device_class="timestamp",
+        entity_category="diagnostic",
+    ),
 )
 
 
@@ -211,18 +250,28 @@ class TestSensorDefinitions:
                        "charging_current_l1", "charging_current_l2",
                        "charging_current_l3", "ac_voltage_l1",
                        "ac_voltage_l2", "ac_voltage_l3",
-                       "board_temperature", "case_temperature"}
+                       "board_temperature", "case_temperature",
+                       "last_session_energy", "lifetime_energy",
+                       "total_sessions"}
         for s in SENSOR_DEFS:
             if s.key in measurement:
                 assert s.state_class is not None, f"{s.key} missing state_class"
 
     def test_diagnostic_sensors_have_entity_category(self) -> None:
-        diagnostic = {"grid_max_power", "is_photovoltaic", "is_three_phase"}
+        diagnostic = {"grid_max_power", "is_photovoltaic", "is_three_phase",
+                      "next_scheduled_charge"}
         for s in SENSOR_DEFS:
             if s.key in diagnostic:
                 assert s.entity_category is not None, (
                     f"{s.key} missing entity_category"
                 )
+
+    def test_session_sensors_are_measurement(self) -> None:
+        """Session sensors that are measurement/total should have state_class."""
+        must_have = {"last_session_energy", "lifetime_energy", "total_sessions"}
+        for s in SENSOR_DEFS:
+            if s.key in must_have:
+                assert s.state_class is not None, f"{s.key} missing state_class"
 
     def test_evse_status_has_all_options(self) -> None:
         s = _def_by_key("evse_status")

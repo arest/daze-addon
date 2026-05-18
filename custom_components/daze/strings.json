@@ -82,6 +82,31 @@
       "is_three_phase": {
         "name": "Three-Phase Supply",
         "entity_category": "diagnostic"
+      },
+      "last_session_energy": {
+        "name": "Last Session Energy"
+      },
+      "last_session_duration": {
+        "name": "Last Session Duration"
+      },
+      "last_session_cost": {
+        "name": "Last Session Cost"
+      },
+      "last_session_start": {
+        "name": "Last Session Start"
+      },
+      "last_session_end": {
+        "name": "Last Session End"
+      },
+      "lifetime_energy": {
+        "name": "Lifetime Energy"
+      },
+      "total_sessions": {
+        "name": "Total Sessions"
+      },
+      "next_scheduled_charge": {
+        "name": "Next Scheduled Charge",
+        "entity_category": "diagnostic"
       }
     },
     "switch": {
