@@ -37,12 +37,12 @@
 
 ## Phase 4: Recharge Sessions & Diagnostics
 
-- [ ] Add session history polling to the coordinator (last N sessions)
-- [ ] Create sensor entities for: last session energy (Wh), last session duration, last session cost (€), last session start/end time
-- [ ] Add aggregate counters: lifetime energy (Wh), total session count
-- [ ] Handle edge cases: never-used charger (no sessions), in-progress session (only partial data available)
-- [ ] Implement `diagnostics.py` for HA diagnostics endpoint — exposes token metadata (not the tokens themselves), API connectivity status, coordinator timing, and entity counts
-- [ ] Add diagnostic sensor for next scheduled charge (if scheduling is active)
+- [x] Add session history polling to the coordinator (last N sessions)
+- [x] Create sensor entities for: last session energy (Wh), last session duration, last session cost (€), last session start/end time
+- [x] Add aggregate counters: lifetime energy (Wh), total session count
+- [x] Handle edge cases: never-used charger (no sessions), in-progress session (only partial data available)
+- [x] Implement `diagnostics.py` for HA diagnostics endpoint — exposes token metadata (not the tokens themselves), API connectivity status, coordinator timing, and entity counts
+- [x] Add diagnostic sensor for next scheduled charge (if scheduling is active)
 
 ## Phase 5: Polish & HACS Submission
 
