@@ -1,0 +1,21 @@
+set_charging_current:
+  name: "Set charging current"
+  description: "Set the maximum charging current on a Daze wallbox."
+  fields:
+    current:
+      required: true
+      selector:
+        number:
+          min: 6000
+          max: 32000
+          step: 100
+          unit_of_measurement: "mA"
+      description: "Maximum charging current in milliamps (mA)."
+
+start_charge:
+  name: "Start charging"
+  description: "Start charging on a Daze wallbox."
+
+stop_charge:
+  name: "Stop charging"
+  description: "Stop charging on a Daze wallbox."

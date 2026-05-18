@@ -1,331 +1,236 @@
-# Daze HomeAssistant Addon
+# Daze Wallbox
 
-Daze is a wallbox controllable via Mobile app and webapp at [webportal.dazeservice.com](https://webportal.dazeservice.com).
+[![HA Community](https://img.shields.io/badge/Home%20Assistant-2025.x-41BDF5?logo=homeassistant)](https://www.home-assistant.io/)
+[![HACS Validation](https://github.com/andrea/daze-addon/actions/workflows/validate.yaml/badge.svg)](https://github.com/andrea/daze-addon/actions/workflows/validate.yaml)
+[![GitHub](https://img.shields.io/github/license/andrea/daze-addon)](LICENSE)
 
-This app (previously addon) integrates Daze wallbox controls and metrics into Home Assistant.
+Home Assistant integration for **Daze WallBox EV chargers**. Monitor charging metrics in real time and control your wallbox directly from your HA dashboard — no separate app required.
 
-The initial access_token and refresh token will be provided by the user manually during installation. But as the auth token is short lived, we'll keep updating this value thanks to refresh token
+Daze wallboxes are managed through the [Daze web portal](https://webportal.dazeservice.com). This integration bridges the gap, bringing your wallbox into Home Assistant alongside all your other smart home devices.
 
-The Goal is to watch the Wallbox status (current, charging/not charging)
-and control it ( change current, pause/play )
+---
 
+## Features
 
-# Auth method:
+- **Real-time monitoring** — Power (W), delivered energy (Wh), charging current per phase (mA), AC voltage per phase (V), board and case temperatures (°C)
+- **EVSE status** — See whether the wallbox is charging, idle, paused, or in error
+- **Charge control** — Start and stop charging from HA switches, automations, or dashboards
+- **Current limit** — Set the maximum charging current as a number entity (6–32 A, 0.1 A steps)
+- **Operation mode** — Switch between eco, fast, scheduled, and other modes
+- **Session history** — Track energy, duration, and cost per recharge session
+- **Lifetime totals** — Total energy delivered and session count
+- **Diagnostics** — Grid max power, photovoltaic presence, three-phase supply info
+- **Fully UI-driven** — Set up entirely through the Home Assistant UI, no YAML editing required
 
-Bearer with provided access_token
+---
 
-# Breakdown of API calls
+## Installation
 
-1) Get User INFO
-Request:
-GET https://daze.auth.eu-central-1.amazoncognito.com/oauth2/userInfo
-Response:
-{
-    "custom:usertype": "",
-    "custom:country": "",
-    "sub": "",
-    "email_verified": "",
-    "address": "",
-    "custom:cap": "3530",
-    "custom:city": " ",
-    "custom:phone": "",
-    "identities": "[{\"dateCreated\":\"1762526839478\",\"userId\":\"113879948999503992216\",\"providerName\":\"Google\",\"providerType\":\"Google\",\"issuer\":null,\"primary\":\"false\"}]",
-    "name": "",
-    "family_name": "",
-    "email": "",
-    "username": ""
-}
+### Via HACS (recommended)
 
-2) Get Network list
+1. Make sure [HACS](https://hacs.xyz/) is installed in your Home Assistant instance
+2. Go to **HACS → Integrations**
+3. Click the three dots in the top-right corner and select **Custom repositories**
+4. Add this repository URL:
+   ```
+   https://github.com/andrea/daze-addon
+   ```
+5. Select **Integration** as the category and click **Add**
+6. Close the dialog — the Daze Wallbox integration should now appear in HACS
+7. Click **Install** on the Daze Wallbox card
+8. Restart Home Assistant
 
-curl 'https://webapi.dazeservice.com/v3/users/andrea.restello@gmail.com/networks?includeStats=true' \
-  -H 'accept: application/json, text/plain, */*' \
-  -H 'authorization: Bearer' 
+### Manual installation
 
-{"data":[{"numEvsesInNetwork":1,"numUsersInNetwork":1,"numRfidsInNetwork":0,"isAdmin":true,"id":null,"uid":"ad85377e-f30c-4554-bd5c-47be640d740b","name":"casa","description":null,"address":"via martiri libertà 34","city":"rubano","zipCode":"35030","country":"Italy","networkType":3,"gridIsThreePhase":false,"supplyMaxPower":4500,"chargersMaxPower":0,"isPhotovoltaic":true,"isPhotovoltaicThreePhase":false,"isAccumulation":false,"accumulationMaxPower":0,"arera":false,"updated":"2026-05-15T09:07:46.415295Z","isDeleted":false,"slaveNumber":0,"energyCostMulByThousand":350,"priceActivationMulByThousand":null,"priceEnergyMulByThousand":null,"priceMinuteChargingMulByThousand":null,"priceMinutePostChargingMulByThousand":null,"smartTariffEnabled":false,"ecoModeType":0,"networkRechargeModality":0,"ecoModeEnabled":false,"ecoSchedule":[],"timeZone":"Europe/Berlin","selfConsumptionEnabledOutOfTimeSlot":false,"threePhaseAutoSwitchEnabled":false,"emsConfiguration":0,"ems":null,"currency":{"code":"EUR","symbol":"€"}}],"message":"","errors":[]}
+1. Copy the `custom_components/daze/` directory from this repository into your Home Assistant `custom_components/` directory
+2. Restart Home Assistant
 
+---
 
-3) Get the Chargers
+## Configuration
 
+1. Go to **Settings → Devices & services**
+2. Click **Add integration** and search for **Daze Wallbox**
+3. Enter your Daze **Access Token** and **Refresh Token**
 
-curl 'https://webapi.dazeservice.com/v3/networks/ad85377e-f30c-4554-bd5c-47be640d740b/evses?includeEcoInfo=false' \
-  -H 'accept: application/json, text/plain, */*' \
+   > **Where to find your tokens:** These are obtained from the Daze web portal ([webportal.dazeservice.com](https://webportal.dazeservice.com)) or the developer console. The integration uses a personal access token model — not email/password.
 
-{
-    "data": [
-        {
-            "id": null,
-            "serialNumber": "24DT0102958",
-            "deviceProfile": "DT01",
-            "deviceProfileId": "62a1cd50-fe3b-11ed-811c-b9fea7ea4299",
-            "evseName": "casa",
-            "arera": false,
-            "dpm": true,
-            "autostart": true,
-            "photovoltaic": true,
-            "supplyGrid3F": false,
-            "supplyGridMaxPower": 4500,
-            "softwareVersion": "22.4.0",
-            "firmwareVersion": "13.3.0",
-            "assignedFirmwarePackage": {
-                "id": "f4dd0da0-9926-11f0-8ed7-49bbef6b42eb",
-                "type": 0,
-                "sizeInBytes": 120544,
-                "tag": "DT01_STM 13.3.0",
-                "title": "DT01_STM",
-                "version": "13.3.0",
-                "checksum": "304490a09920313b017a041b048715fec080617b86d020c643f0acd2cc407dcf",
-                "checksumAlgorithm": "SHA256",
-                "deviceProfileId": "62a1cd50-fe3b-11ed-811c-b9fea7ea4299"
-            },
-            "assignedSoftwarePackage": {
-                "id": "da1f0b80-9926-11f0-8ed7-49bbef6b42eb",
-                "type": 1,
-                "sizeInBytes": 2184336,
-                "tag": "DT01_ESP 22.4.0",
-                "title": "DT01_ESP",
-                "version": "22.4.0",
-                "checksum": "f4a7988c92e8228e0f4df68ad2fc490e12096c22cbc763749341abdd18276ade",
-                "checksumAlgorithm": "SHA256",
-                "deviceProfileId": "62a1cd50-fe3b-11ed-811c-b9fea7ea4299"
-            },
-            "sccLimit": 0,
-            "evseIsThreePhase": false,
-            "updated": "2026-05-16T09:44:11.001442Z",
-            "schedules": [
-                {
-                    "day": 0,
-                    "start1": "12:00:00",
-                    "end1": "16:30:00",
-                    "start2": null,
-                    "end2": null,
-                    "start3": null,
-                    "end3": null
-                },
-                {
-                    "day": 6,
-                    "start1": "12:00:00",
-                    "end1": "16:30:00",
-                    "start2": null,
-                    "end2": null,
-                    "start3": null,
-                    "end3": null
-                },
-                {
-                    "day": 2,
-                    "start1": "11:00:00",
-                    "end1": "16:00:00",
-                    "start2": null,
-                    "end2": null,
-                    "start3": null,
-                    "end3": null
-                },
-                {
-                    "day": 1,
-                    "start1": "11:00:00",
-                    "end1": "16:00:00",
-                    "start2": null,
-                    "end2": null,
-                    "start3": null,
-                    "end3": null
-                }
-            ],
-            "wifiEnabled": true,
-            "wifiSSID": "TP-LINK_RESTELLO",
-            "scheduling": false,
-            "isOcppMode": false,
-            "ocppServer": "",
-            "hasOcppPassword": false,
-            "canBeAutomaticallyUpdate": true,
-            "lastStatus": 3,
-            "operationMode": 3,
-            "isMode2On": false,
-            "active": true,
-            "acPhaseLineId1": 1,
-            "acPhaseLineId2": 0,
-            "acPhaseLineId3": 0,
-            "gridMaxCurrentL1": 0,
-            "gridMaxCurrentL2": 0,
-            "gridMaxCurrentL3": 0,
-            "warrantyExpiration": "2027-01-16T00:00:00Z",
-            "lastTime": "01:02:37",
-            "lastSupplyGridInstantCurrentL1": 2637,
-            "lastSupplyGridInstantCurrentL2": 190,
-            "lastSupplyGridInstantCurrentL3": 223,
-            "lastMaxInstallationCurrent": 32000,
-            "ecoModeEnabled": false,
-            "threePhaseAutoSwitchOn": false,
-            "dryContact": 0,
-            "supplyGridCurrentExtendedRangeSensorOn": false,
-            "supplyGridSensorType": 0,
-            "isDynamicLoadManagementOn": false,
-            "powerSharingMasterManagement": 0,
-            "localMasterStaticAvailablePower": null,
-            "maxThreePhaseImbalanceInMilliAmps": 0,
-            "maxExternalChargingCurrentInMilliAmps": 9130,
-            "apn": null,
-            "createdByEmail": null,
-            "brightness": null,
-            "connectivityTypeForScenario": 0,
-            "evseTypology": 0,
-            "lcdLanguage": "Italian",
-            "sockets": [
-                {
-                    "id": "b23f7870-7cdf-11ef-93a4-2725cc2d4572",
-                    "serialNumber": "24DT0102958",
-                    "deviceToken": null,
-                    "evseIsThreePhase": false,
-                    "lastEnergy": 2208,
-                    "ocppId": "",
-                    "lastTime": "01:02:37",
-                    "lastPower": 2077,
-                    "lastUId": "",
-                    "lastSessionIdAsDateTime": "2026-05-16T09:53:16Z",
-                    "lastSessionId": 1778925196000,
-                    "slaveId": 0,
-                    "lastStatus": 3,
-                    "operationMode": 3,
-                    "lastChargingCurrentInstantL1": 9052,
-                    "lastChargingCurrentInstantL2": 0,
-                    "lastChargingCurrentInstantL3": 0,
-                    "lastEVSESuspensionReason": 0,
-                    "lastEVSESystemError": 0,
-                    "ecoChargeManuallyPaused": 0,
-                    "maxExternalChargingCurrentInMilliAmps": 9130,
-                    "isPrimary": true,
-                    "lastMaxChargingCurrent": 9130,
-                    "smartTariffSessionStartUtc0": "1970-01-01T00:00:00Z",
-                    "lastACVoltageL1": 229,
-                    "lastACVoltageL2": 7,
-                    "lastACVoltageL3": 6,
-                    "lastBoardL1Temperature": 32,
-                    "lastCaseTemperature": 34,
-                    "lastFanStatus": null,
-                    "lastMultipleEVSEMaxInstallationCurrent": null,
-                    "lastOCPPState": null,
-                    "lastSlaveConnectionStatusToMaster": null,
-                    "lastUpdateStatus": null,
-                    "active": true,
-                    "lastAttributesUpdatedOn": "2026-05-16T10:56:56.424646Z"
-                }
-            ]
-        }
-    ],
-    "message": "",
-    "errors": []
-}
+4. Click **Submit** — the integration validates your tokens
+5. Select your **network** (installation location) from the list
+6. Review the confirmation screen with your wallbox details
+7. Click **Submit** to complete setup
 
-4) Get Recharge Sessions
+The wallbox should now appear as a single device with all sensors and controls grouped under it.
 
+### Re-authentication
 
-curl 'https://webapi.dazeservice.com/v3/networks/ad85377e-f30c-4554-bd5c-47be640d740b/rechargeSessions?TotalLimit=1000&LimitPerPage=4' \
-  -H 'accept: application/json, text/plain, */*' 
+If your tokens expire, the integration will automatically prompt you to re-enter them through the HA UI. You'll see a notification and a re-authentication flow.
 
-{
-    "data": [
-        {
-            "id": "b959d3ff-1bd9-4568-9f7d-6f3eda389ce3",
-            "evseName": "casa",
-            "serialNumber": "24DT0102958",
-            "socketSerialNumber": "24DT0102958",
-            "sessionId": 1778924375000,
-            "sessionEnd": 1778925178000,
-            "totEnergy": 462,
-            "averagePow": 2226,
-            "chargeTime": "00:12:27",
-            "evseId": "b23f7870-7cdf-11ef-93a4-2725cc2d4572",
-            "user": "",
-            "email": "",
-            "uid": "",
-            "authenticationStatus": 0,
-            "isAdmin": true,
-            "sessionType": 6,
-            "networkName": "casa",
-            "rfidSerialNumber": "",
-            "startDate": "2026-05-16T09:39:35Z",
-            "endDate": "2026-05-16T09:52:58Z",
-            "telemetryDate": "2026-05-16T09:39:40.517052Z",
-            "computedEnergyCostMulByThousand": 161700,
-            "currency": {
-                "code": "EUR",
-                "symbol": "€"
-            },
-            "smartTariffSession": null,
-            "isAveragePowValid": true,
-            "priceMulByThousand": 0,
-            "timezone": "Europe/Berlin"
-        },
-}
+---
 
+## Entities
 
-5) Charger Infos
+### Sensors
 
-curl 'https://webapi.dazeservice.com/v3/sockets/24DT0102958/remoteInfo?includeEcoInfo=true&includeNextSchedule=true'
+| Entity ID | Name | Device Class | State Class | Unit |
+|-----------|------|-------------|-------------|------|
+| `sensor.daze_instant_power` | Instant Power | `power` | `measurement` | W |
+| `sensor.daze_delivered_energy` | Delivered Energy | `energy` | `total_increasing` | Wh |
+| `sensor.daze_charging_current_l1` | Charging Current L1 | `current` | `measurement` | mA |
+| `sensor.daze_charging_current_l2` | Charging Current L2 | `current` | `measurement` | mA |
+| `sensor.daze_charging_current_l3` | Charging Current L3 | `current` | `measurement` | mA |
+| `sensor.daze_ac_voltage_l1` | AC Voltage L1 | `voltage` | `measurement` | V |
+| `sensor.daze_ac_voltage_l2` | AC Voltage L2 | `voltage` | `measurement` | V |
+| `sensor.daze_ac_voltage_l3` | AC Voltage L3 | `voltage` | `measurement` | V |
+| `sensor.daze_board_temperature` | Board Temperature | `temperature` | `measurement` | °C |
+| `sensor.daze_case_temperature` | Case Temperature | `temperature` | `measurement` | °C |
+| `sensor.daze_evse_status` | EVSE Status | `enum` | — | idle / charging / paused / error |
+| `sensor.daze_last_session_energy` | Last Session Energy | `energy` | `total_increasing` | Wh |
+| `sensor.daze_last_session_duration` | Last Session Duration | — | — | min |
+| `sensor.daze_last_session_cost` | Last Session Cost | `monetary` | — | EUR |
+| `sensor.daze_last_session_start` | Last Session Start | `timestamp` | — | |
+| `sensor.daze_last_session_end` | Last Session End | `timestamp` | — | |
+| `sensor.daze_lifetime_energy` | Lifetime Energy | `energy` | `total_increasing` | Wh |
+| `sensor.daze_total_sessions` | Total Sessions | — | `total_increasing` | sessions |
 
+#### Diagnostic sensors
 
-{
-    "data": {
-        "active": true,
-        "evseState": 3,
-        "evseSuspensionReason": 0,
-        "evseSystemError": 0,
-        "chargeSession": {
-            "deliveredEnergyAsWattHour": 2208,
-            "instantPowerAsWatt": 2077,
-            "startTime": "2026-05-16T09:53:16Z",
-            "chargeTime": "01:02:37",
-            "user": null,
-            "sessionId": 1778925196000,
-            "lastChargingCurrentInstantL1": 9052,
-            "lastChargingCurrentInstantL2": 0,
-            "lastChargingCurrentInstantL3": 0,
-            "lastMaxChargingCurrent": 9130,
-            "lastACVoltageL1": 229,
-            "lastACVoltageL2": 7,
-            "lastACVoltageL3": 6,
-            "currentlyChargingInThreePhase": false
-        },
-        "smartTariffBatteryInfo": null,
-        "nextScheduleInfo": null,
-        "evseIsThreePhase": false,
-        "isPaused": false,
-        "isScheduledPaused": false,
-        "isSmartTariffPaused": false
-    },
-    "message": "",
-    "errors": []
-}
+| Entity ID | Name | Device Class | Category |
+|-----------|------|-------------|----------|
+| `sensor.daze_grid_max_power` | Grid Max Power | `power` | diagnostic |
+| `sensor.daze_is_photovoltaic` | Photovoltaic Present | `enum` | diagnostic |
+| `sensor.daze_is_three_phase` | Three-Phase Supply | `enum` | diagnostic |
+| `sensor.daze_next_scheduled_charge` | Next Scheduled Charge | `timestamp` | diagnostic |
 
-6) Set Max Charging Current
+### Controls
 
-curl 'https://webapi.dazeservice.com/v3/evses/24DT0102958/configurations/maxExternalChargingCurrent' \
-  -H 'accept: application/json, text/plain, */*' \
-  -H 'authorization: Bearer ' \
-  -H 'content-type: application/json' \
-  --data-raw '{"evseSerialNumber":"24DT0102958","maxExternalChargingCurrentInMilliAmps":9565}'
+| Platform | Entity ID | Name | Purpose |
+|----------|-----------|------|---------|
+| Switch | `switch.daze_charge_control` | Charge Control | Start / stop charging |
+| Number | `number.daze_max_charging_current` | Max Charging Current | Set charging current limit (6–32 A) |
+| Select | `select.daze_operation_mode` | Operation Mode | Switch between eco, fast, scheduled |
 
-{"message":"","errors":[]}
+---
 
+## Services
 
-7) Pause charge
+These services are available for automations and scripts:
 
-curl 'https://webapi.dazeservice.com/v3/sockets/24DT0102958/commands/stopcharge' \
-  --data-raw '{}'
+### `daze.start_charge`
 
-{"message":"","errors":[]}
+Start charging on a Daze wallbox.
 
+```yaml
+service: daze.start_charge
+```
 
-8) Start charge
+### `daze.stop_charge`
 
-curl 'https://webapi.dazeservice.com/v3/sockets/24DT0102958/commands/playcharge' \
-  -H 'accept: application/json, text/plain, */*' \
-  -H 'authorization: Bearer ' \
-  --data-raw '{}'
+Stop charging on a Daze wallbox.
 
-9) Refresh TOKEN
+```yaml
+service: daze.stop_charge
+```
 
-curl 'https://daze.auth.eu-central-1.amazoncognito.com/oauth2/token' \
-  -H 'accept: */*' \
-  -H 'accept-language: en-US,en-GB;q=0.9,en;q=0.8,it;q=0.7' \
-  -H 'content-type: application/x-www-form-urlencoded;charset=UTF-8' \
-  --data-raw 'client_id=4m0rp7oqarbrc3hn67ivvonba8&redirect_uri=https%3A%2F%2Fwebportal.dazeservice.com%2Fauthentication%2Fcallback&grant_type=refresh_token&refresh_token=XXXX'
+### `daze.set_charging_current`
+
+Set the maximum charging current.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `current` | Yes | Maximum charging current in milliamps (mA). Range: 6000–32000, step 100. |
+
+```yaml
+service: daze.set_charging_current
+data:
+  current: 16000
+```
+
+---
+
+## Automation Examples
+
+### Stop charging when energy price is high
+
+```yaml
+automation:
+  - alias: "Stop Daze charging during peak hours"
+    trigger:
+      - platform: time
+        at: "17:00:00"
+    condition:
+      - condition: state
+        entity_id: switch.daze_charge_control
+        state: "on"
+    action:
+      - service: daze.stop_charge
+```
+
+### Set charging current based on solar production
+
+```yaml
+automation:
+  - alias: "Adjust Daze charging to solar surplus"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.solar_production
+        above: 3000
+    action:
+      - service: daze.set_charging_current
+        data:
+          current: 16000
+```
+
+---
+
+## Troubleshooting
+
+### "Invalid tokens" during setup
+Make sure you've copied the full access token and refresh token — they are long strings. Tokens must be active (not expired). Obtain fresh tokens from the Daze web portal.
+
+### Integration shows "unavailable"
+- Check your internet connection — the Daze API is cloud-based
+- Verify your wallbox is online (check the Daze mobile app)
+- The integration automatically retries; entities become available again once the API responds
+
+### Re-authentication required
+If your refresh token has expired, the integration will trigger a re-authentication flow. Follow the prompts in **Settings → Devices & services** to enter new tokens.
+
+### No data or stale data
+- The integration polls every 30 seconds by default
+- If the Daze API returns errors, the coordinator retries automatically
+- Check the Home Assistant logs for Daze-related error messages
+
+### Sensors not updating after a control command
+The integration automatically refreshes data after sending a start/stop/current command. If values don't update, wait for the next scheduled poll cycle.
+
+---
+
+## Supported hardware
+
+- Daze WallBox EV chargers accessible via the Daze REST API
+- Tested with DT01 device profile
+
+---
+
+## Data & privacy
+
+- All data flows through the Daze cloud API — no local/offline control
+- The integration stores only your access token and refresh token (encrypted in HA config entry storage)
+- No data is sent to third parties beyond the Daze API
+
+---
+
+## Development
+
+### CI/CD
+
+The integration is validated with:
+- [ruff](https://github.com/astral-sh/ruff) for linting
+- [pyright](https://github.com/microsoft/pyright) for type checking
+- `hassfest` for Home Assistant integration validation
+- HACS validation
+
+### License
+
+This project is licensed under the [MIT License](LICENSE).

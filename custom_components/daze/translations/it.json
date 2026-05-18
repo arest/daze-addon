@@ -1,0 +1,143 @@
+{
+  "config": {
+    "title": "Daze Wallbox",
+    "step": {
+      "user": {
+        "data": {
+          "access_token": "Token di accesso",
+          "refresh_token": "Token di aggiornamento"
+        },
+        "description": "Inserisci il token di accesso e il token di aggiornamento di Daze.\n\nPuoi ottenerli dal portale web Daze (webportal.dazeservice.com) o dalla console sviluppatore."
+      },
+      "network": {
+        "data": {
+          "network_uid": "Rete"
+        },
+        "description": "Seleziona la rete (installazione) da monitorare."
+      },
+      "confirm": {
+        "title": "Conferma",
+        "description": "Rete: **{network_name}**\nCaricatore: **{evse_name}** ({serial_number})\nModello: **{device_profile}**\n\nPremi Invia per completare la configurazione."
+      }
+    },
+    "error": {
+      "invalid_token": "I token forniti non sono validi o sono scaduti. Controlla e riprova.",
+      "network_error": "Impossibile connettersi all'API Daze. Verifica la connessione internet e riprova.",
+      "no_networks": "Nessuna rete trovata per questo account.",
+      "no_evses": "Nessuna wallbox trovata nella rete selezionata.",
+      "unknown": "Si è verificato un errore imprevisto. Riprova."
+    },
+    "abort": {
+      "already_configured": "Questa wallbox è già configurata.",
+      "reauth_successful": "Re-autenticazione completata con successo."
+    }
+  },
+  "reauth": {
+    "title": "Re-autentica Daze Wallbox",
+    "description": "I token Daze sono scaduti. Inserisci un nuovo token di accesso e un nuovo token di aggiornamento per ripristinare l'integrazione."
+  },
+  "services": {
+    "set_charging_current": {
+      "name": "Imposta corrente di carica",
+      "description": "Imposta la corrente massima di carica sulla wallbox Daze."
+    },
+    "start_charge": {
+      "name": "Avvia carica",
+      "description": "Avvia la carica sulla wallbox Daze."
+    },
+    "stop_charge": {
+      "name": "Interrompi carica",
+      "description": "Interrompe la carica sulla wallbox Daze."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "instant_power": {
+        "name": "Potenza istantanea"
+      },
+      "delivered_energy": {
+        "name": "Energia erogata"
+      },
+      "charging_current_l1": {
+        "name": "Corrente di carica L1"
+      },
+      "charging_current_l2": {
+        "name": "Corrente di carica L2"
+      },
+      "charging_current_l3": {
+        "name": "Corrente di carica L3"
+      },
+      "ac_voltage_l1": {
+        "name": "Tensione CA L1"
+      },
+      "ac_voltage_l2": {
+        "name": "Tensione CA L2"
+      },
+      "ac_voltage_l3": {
+        "name": "Tensione CA L3"
+      },
+      "board_temperature": {
+        "name": "Temperatura scheda"
+      },
+      "case_temperature": {
+        "name": "Temperatura involucro"
+      },
+      "evse_status": {
+        "name": "Stato EVSE"
+      },
+      "grid_max_power": {
+        "name": "Potenza massima rete",
+        "entity_category": "diagnostic"
+      },
+      "is_photovoltaic": {
+        "name": "Fotovoltaico presente",
+        "entity_category": "diagnostic"
+      },
+      "is_three_phase": {
+        "name": "Alimentazione trifase",
+        "entity_category": "diagnostic"
+      },
+      "last_session_energy": {
+        "name": "Energia ultima sessione"
+      },
+      "last_session_duration": {
+        "name": "Durata ultima sessione"
+      },
+      "last_session_cost": {
+        "name": "Costo ultima sessione"
+      },
+      "last_session_start": {
+        "name": "Inizio ultima sessione"
+      },
+      "last_session_end": {
+        "name": "Fine ultima sessione"
+      },
+      "lifetime_energy": {
+        "name": "Energia totale"
+      },
+      "total_sessions": {
+        "name": "Sessioni totali"
+      },
+      "next_scheduled_charge": {
+        "name": "Prossima carica programmata",
+        "entity_category": "diagnostic"
+      }
+    },
+    "switch": {
+      "charge_control": {
+        "name": "Controllo carica"
+      }
+    },
+    "number": {
+      "max_charging_current": {
+        "name": "Corrente massima di carica",
+        "entity_category": "config"
+      }
+    },
+    "select": {
+      "operation_mode": {
+        "name": "Modalità operativa"
+      }
+    }
+  }
+}

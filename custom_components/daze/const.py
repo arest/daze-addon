@@ -29,3 +29,8 @@ DEFAULT_TOKEN_EXPIRY_BUFFER = 60  # seconds
 
 # Platform list
 PLATFORMS = ["sensor", "switch", "number", "select"]
+
+# Service names
+SERVICE_START_CHARGE = "start_charge"
+SERVICE_STOP_CHARGE = "stop_charge"
+SERVICE_SET_CHARGING_CURRENT = "set_charging_current"

@@ -36,6 +36,20 @@
     "title": "Re-authenticate Daze Wallbox",
     "description": "Your Daze tokens have expired. Please enter new access and refresh tokens to restore the integration."
   },
+  "services": {
+    "set_charging_current": {
+      "name": "Set charging current",
+      "description": "Set the maximum charging current on a Daze wallbox."
+    },
+    "start_charge": {
+      "name": "Start charging",
+      "description": "Start charging on a Daze wallbox."
+    },
+    "stop_charge": {
+      "name": "Stop charging",
+      "description": "Stop charging on a Daze wallbox."
+    }
+  },
   "entity": {
     "sensor": {
       "instant_power": {

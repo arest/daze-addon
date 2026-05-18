@@ -26,7 +26,10 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .coordinator import DazeDataUpdateCoordinator
 
 from .const import DOMAIN
 
@@ -93,6 +96,45 @@ class DazeSensorEntityDescription(SensorEntityDescription):
     """
 
     value_fn: Callable[[dict[str, Any]], Any | None] = lambda data: None
+
+
+# ------------------------------------------------------------------
+# Helper functions used by sensor definitions
+# ------------------------------------------------------------------
+
+
+_SCHEDULED_CHARGE_KEYS = (
+    "nextScheduledCharge",
+    "scheduledChargeTime",
+    "scheduledStart",
+    "scheduleTime",
+)
+"""Possible API field names for scheduled charge time.
+
+Checked in order — the first non-None value wins.
+"""
+
+
+def _get_next_scheduled_charge(data: dict[str, Any]) -> Any | None:
+    """Extract the next scheduled charge time from coordinator data.
+
+    Tries multiple possible API field names to accommodate variations
+    in the Daze API response. Returns None if no scheduling data is
+    available (scheduling not active or not supported).
+    """
+    for key in _SCHEDULED_CHARGE_KEYS:
+        value = data.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _presence_on_off(data: dict[str, Any], key: str) -> str | None:
+    """Return 'on' or 'off' for a boolean diagnostic field."""
+    val = data.get(key)
+    if val is None:
+        return None
+    return "on" if bool(val) else "off"
 
 
 # ------------------------------------------------------------------
@@ -252,38 +294,23 @@ SENSORS: tuple[DazeSensorEntityDescription, ...] = (
 )
 
 
-def _presence_on_off(data: dict[str, Any], key: str) -> str | None:
-    """Return 'on' or 'off' for a boolean diagnostic field."""
-    val = data.get(key)
-    if val is None:
-        return None
-    return "on" if bool(val) else "off"
+# ------------------------------------------------------------------
+# Sensors that restore state on HA restart
+# ------------------------------------------------------------------
 
+_RESTORE_STATE_KEYS: frozenset[str] = frozenset({
+    "delivered_energy",
+    "lifetime_energy",
+    "total_sessions",
+    "last_session_energy",
+    "last_session_cost",
+    "last_session_duration",
+})
+"""Sensor keys whose native_value should survive HA restarts.
 
-_SCHEDULED_CHARGE_KEYS = (
-    "nextScheduledCharge",
-    "scheduledChargeTime",
-    "scheduledStart",
-    "scheduleTime",
-)
-"""Possible API field names for scheduled charge time.
-
-Checked in order — the first non-None value wins.
+These are cumulative or infrequently-changing values where losing the
+last known state would cause visible gaps in history or dashboards.
 """
-
-
-def _get_next_scheduled_charge(data: dict[str, Any]) -> Any | None:
-    """Extract the next scheduled charge time from coordinator data.
-
-    Tries multiple possible API field names to accommodate variations
-    in the Daze API response. Returns None if no scheduling data is
-    available (scheduling not active or not supported).
-    """
-    for key in _SCHEDULED_CHARGE_KEYS:
-        value = data.get(key)
-        if value is not None:
-            return value
-    return None
 
 
 # ------------------------------------------------------------------
@@ -292,7 +319,7 @@ def _get_next_scheduled_charge(data: dict[str, Any]) -> Any | None:
 
 
 class DazeWallboxSensorEntity(
-    CoordinatorEntity[DazeDataUpdateCoordinator], SensorEntity
+    CoordinatorEntity[DazeDataUpdateCoordinator], RestoreEntity, SensorEntity
 ):
     """Base sensor entity for Daze Wallbox metrics.
 
@@ -300,10 +327,12 @@ class DazeWallboxSensorEntity(
     - ``device_info`` from the registered wallbox device
     - ``_attr_has_entity_name`` so HA prefixes the device name
     - Automatic ``available`` propagation via ``CoordinatorEntity``
+    - State restoration for cumulative sensors via ``RestoreEntity``
     """
 
     entity_description: DazeSensorEntityDescription
     _attr_has_entity_name = True
+    _restored_value: Any | None = None
 
     def __init__(
         self,
@@ -324,12 +353,47 @@ class DazeWallboxSensorEntity(
         self._attr_unique_id = f"{coordinator.serial_number}_{description.key}"
         self._attr_device_info = device_info
 
+    async def async_added_to_hass(self) -> None:
+        """Restore last known state on HA restart.
+
+        Only meaningful for cumulative sensors listed in
+        ``_RESTORE_STATE_KEYS``. If the coordinator already returned
+        data before this entity is added, restoration is skipped.
+        """
+        await super().async_added_to_hass()
+
+        # Only restore for sensors that need it
+        if self.entity_description.key not in _RESTORE_STATE_KEYS:
+            return
+
+        # Coordinator already has data — no need to restore
+        if self.coordinator.data is not None:
+            return
+
+        last_state = await self.async_get_last_state()
+        if last_state is None or last_state.state in (None, "unknown", "unavailable"):
+            return
+
+        try:
+            # Preserve the state as a float for numeric sensors
+            self._restored_value = float(last_state.state)
+        except (ValueError, TypeError):
+            self._restored_value = last_state.state
+
     @property
     def native_value(self) -> Any | None:
-        """Return the sensor value from the latest coordinator data."""
-        if self.coordinator.data is None:
-            return None
-        return self.entity_description.value_fn(self.coordinator.data)
+        """Return the sensor value from the latest coordinator data.
+
+        Falls back to the restored value (from before HA restart) when
+        coordinator data is temporarily unavailable, so cumulative
+        sensors don't show None during startup delays.
+        """
+        if self.coordinator.data is not None:
+            return self.entity_description.value_fn(self.coordinator.data)
+        # Fall back to restored state if available
+        if self._restored_value is not None:
+            return self._restored_value
+        return None
 
 
 # ------------------------------------------------------------------
