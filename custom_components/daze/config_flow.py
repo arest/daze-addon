@@ -10,7 +10,6 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DazeApiClient
@@ -25,7 +24,6 @@ from .const import (
     CONF_REFRESH_TOKEN,
     CONF_SERIAL_NUMBER,
     CONF_SOFTWARE_VERSION,
-    CONF_TOKEN_EXPIRY,
     DOMAIN,
 )
 

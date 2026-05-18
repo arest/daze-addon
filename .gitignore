@@ -15,3 +15,6 @@ Thumbs.db
 
 # Test artifacts
 .pytest_cache/
+
+.agents/
+skills-lock.json

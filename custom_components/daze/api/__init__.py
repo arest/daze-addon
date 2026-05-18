@@ -302,6 +302,31 @@ class DazeApiClient:
         }
         return await self._request("POST", url, json=payload)
 
+    async def async_set_eco_mode(
+        self, serial: str, eco_mode_enabled: bool
+    ) -> dict[str, Any]:
+        """Enable or disable eco mode on a wallbox.
+
+        POST /v3/evses/{serial}/configurations/ecoMode
+
+        Args:
+            serial: The serial number of the wallbox.
+            eco_mode_enabled: True to enable eco mode, False to disable.
+
+        Returns:
+            The response dict.
+
+        """
+        url = (
+            f"{API_BASE_URL}/evses/{serial}"
+            "/configurations/ecoMode"
+        )
+        payload = {
+            "evseSerialNumber": serial,
+            "ecoModeEnabled": eco_mode_enabled,
+        }
+        return await self._request("POST", url, json=payload)
+
     async def async_start_charge(self, serial: str) -> dict[str, Any]:
         """Start charging on a wallbox.
 

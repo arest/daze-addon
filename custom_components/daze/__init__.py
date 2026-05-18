@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from homeassistant.const import Platform
 from homeassistant.helpers import device_registry as dr
 
 from .const import (
