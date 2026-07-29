@@ -17,6 +17,7 @@ from .api.auth import AuthError, DazeAuthClient
 from .const import (
     CONF_ACCESS_TOKEN,
     CONF_DEVICE_PROFILE,
+    CONF_EMAIL,
     CONF_EVSE_NAME,
     CONF_FIRMWARE_VERSION,
     CONF_NETWORK_NAME,
@@ -207,7 +208,7 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
 
         # Build selector options from available networks
         network_options = {
-            net["uid"]: f"{net.get('name', 'Unknown')} ({net.get('country', '')})"
+            net["uid"]: net.get("name", "Unknown")
             for net in self._networks
         }
 
@@ -234,10 +235,15 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None or self._serial_number:
+            # Apply the user-chosen device name from the form field
+            if user_input is not None and CONF_EVSE_NAME in user_input:
+                self._evse_name = user_input[CONF_EVSE_NAME]
+
             # Create the config entry
             data = {
                 CONF_ACCESS_TOKEN: self._access_token,
                 CONF_REFRESH_TOKEN: self._refresh_token,
+                CONF_EMAIL: self._email,
                 CONF_NETWORK_UID: self._network_uid,
                 CONF_NETWORK_NAME: self._network_name,
                 CONF_EVSE_NAME: self._evse_name,
@@ -293,7 +299,8 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
         evse = evses[0]
-        self._evse_name = evse.get("evseName", "Daze Wallbox")
+        original_evse_name = evse.get("evseName", "Daze Wallbox")
+        self._evse_name = f"{original_evse_name} Daze"
         self._serial_number = evse.get("serialNumber", "")
         self._device_profile = evse.get("deviceProfile", "")
         self._firmware_version = evse.get("firmwareVersion", "")
@@ -301,10 +308,14 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="confirm",
-            data_schema=vol.Schema({}),
+            data_schema=vol.Schema({
+                vol.Required(
+                    CONF_EVSE_NAME, default=self._evse_name
+                ): str,
+            }),
             description_placeholders={
                 "network_name": self._network_name or "",
-                "evse_name": self._evse_name,
+                "evse_name": original_evse_name,
                 "serial_number": self._serial_number,
                 "device_profile": self._device_profile,
             },

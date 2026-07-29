@@ -206,7 +206,7 @@ After validation, the user selects which network (installation) to monitor:
 │  ✓ Success!                         │
 │                                     │
 │  Network: casa                      │
-│  Charger: 24DT0102958               │
+│  Charger: ABCDE12345               │
 │                                     │
 │  [Finish]                           │
 └─────────────────────────────────────┘

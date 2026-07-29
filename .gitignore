@@ -13,8 +13,31 @@ build/
 .DS_Store
 Thumbs.db
 
+
 # Test artifacts
 .pytest_cache/
 
+# Development & internal
 .agents/
 skills-lock.json
+/backlog/
+/specs/
+
+# Logs
+*.log
+*.log.*
+
+# Environment & secrets
+.env
+.env.*
+*.env
+secrets.yaml
+credentials.*
+*.token
+
+# Keys & certificates
+*.pem
+*.key
+*.cert
+*.p12
+*.pfx

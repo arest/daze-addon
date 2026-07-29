@@ -261,7 +261,7 @@ class DazeApiClient:
     ) -> dict[str, Any]:
         """Fetch live socket remote info (metrics, state).
 
-        GET /v3/sockets/{serial}/remoteInfo?includeEcoInfo=true
+        GET /v3/sockets/{serial}/remoteInfo?includeEcoInfo=true&includeNextSchedule=true
 
         Args:
             serial: The serial number of the wallbox.
@@ -272,7 +272,7 @@ class DazeApiClient:
         """
         url = (
             f"{API_BASE_URL}/sockets/{serial}/remoteInfo"
-            "?includeEcoInfo=true"
+            "?includeEcoInfo=true&includeNextSchedule=true"
         )
         data = await self._request("GET", url)
         return data.get("data", {})

@@ -29,16 +29,13 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .coordinator import DazeDataUpdateCoordinator
-
 from .const import DOMAIN
+from .coordinator import DazeDataUpdateCoordinator
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
-
-    from .coordinator import DazeDataUpdateCoordinator
 
 
 # ------------------------------------------------------------------
@@ -73,13 +70,7 @@ def _get_evse_status(data: dict[str, Any]) -> str | None:
     return EVSE_STATUS_MAP.get(str(raw).lower(), str(raw).lower())
 
 
-def _get_presence_value(data: dict[str, Any]) -> str | None:
-    """Return 'on' or 'off' for a boolean diagnostic field.
 
-    Field keys are mapped from the sensor name: ``is_photovoltaic`` and
-    ``is_three_phase``.
-    """
-    return None  # overridden per sensor via lambdas in SENSORS
 
 
 # ------------------------------------------------------------------
@@ -143,61 +134,63 @@ def _presence_on_off(data: dict[str, Any], key: str) -> str | None:
 
 SENSORS: tuple[DazeSensorEntityDescription, ...] = (
     # --- Measurement sensors ---
+    # NOTE: Field names match the raw API response keys since the
+    # coordinator flattens chargeSession into the top-level data dict.
     DazeSensorEntityDescription(
         key="instant_power",
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,
-        value_fn=lambda data: data.get("instantPower"),
+        value_fn=lambda data: data.get("instantPowerAsWatt"),
     ),
     DazeSensorEntityDescription(
         key="delivered_energy",
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
-        value_fn=lambda data: data.get("deliveredEnergy"),
+        value_fn=lambda data: data.get("deliveredEnergyAsWattHour"),
     ),
     DazeSensorEntityDescription(
         key="charging_current_l1",
         device_class=SensorDeviceClass.CURRENT,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricCurrent.MILLIAMPERE,
-        value_fn=lambda data: data.get("phaseCurrentL1"),
+        value_fn=lambda data: data.get("lastChargingCurrentInstantL1"),
     ),
     DazeSensorEntityDescription(
         key="charging_current_l2",
         device_class=SensorDeviceClass.CURRENT,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricCurrent.MILLIAMPERE,
-        value_fn=lambda data: data.get("phaseCurrentL2"),
+        value_fn=lambda data: data.get("lastChargingCurrentInstantL2"),
     ),
     DazeSensorEntityDescription(
         key="charging_current_l3",
         device_class=SensorDeviceClass.CURRENT,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricCurrent.MILLIAMPERE,
-        value_fn=lambda data: data.get("phaseCurrentL3"),
+        value_fn=lambda data: data.get("lastChargingCurrentInstantL3"),
     ),
     DazeSensorEntityDescription(
         key="ac_voltage_l1",
         device_class=SensorDeviceClass.VOLTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        value_fn=lambda data: data.get("phaseVoltageL1"),
+        value_fn=lambda data: data.get("lastACVoltageL1"),
     ),
     DazeSensorEntityDescription(
         key="ac_voltage_l2",
         device_class=SensorDeviceClass.VOLTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        value_fn=lambda data: data.get("phaseVoltageL2"),
+        value_fn=lambda data: data.get("lastACVoltageL2"),
     ),
     DazeSensorEntityDescription(
         key="ac_voltage_l3",
         device_class=SensorDeviceClass.VOLTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        value_fn=lambda data: data.get("phaseVoltageL3"),
+        value_fn=lambda data: data.get("lastACVoltageL3"),
     ),
     DazeSensorEntityDescription(
         key="board_temperature",
@@ -240,7 +233,7 @@ SENSORS: tuple[DazeSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.ENUM,
         entity_category=EntityCategory.DIAGNOSTIC,
         options=["on", "off"],
-        value_fn=lambda data: _presence_on_off(data, "is_three_phase"),
+        value_fn=lambda data: _presence_on_off(data, "evseIsThreePhase"),
     ),
     # --- Session sensors ---
     DazeSensorEntityDescription(

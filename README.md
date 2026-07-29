@@ -1,7 +1,7 @@
 # Daze Wallbox
 
 [![HA Community](https://img.shields.io/badge/Home%20Assistant-2025.x-41BDF5?logo=homeassistant)](https://www.home-assistant.io/)
-[![HACS Validation](https://github.com/andrea/daze-addon/actions/workflows/validate.yaml/badge.svg)](https://github.com/andrea/daze-addon/actions/workflows/validate.yaml)
+[![HACS Validation](https://github.com/arest/daze-addon/actions/workflows/validate.yaml/badge.svg)](https://github.com/arest/daze-addon/actions/workflows/validate.yaml)
 [![GitHub](https://img.shields.io/github/license/andrea/daze-addon)](LICENSE)
 
 Home Assistant integration for **Daze WallBox EV chargers**. Monitor charging metrics in real time and control your wallbox directly from your HA dashboard — no separate app required.
@@ -33,7 +33,7 @@ Daze wallboxes are managed through the [Daze web portal](https://webportal.dazes
 3. Click the three dots in the top-right corner and select **Custom repositories**
 4. Add this repository URL:
    ```
-   https://github.com/andrea/daze-addon
+   https://github.com/arest/daze-addon
    ```
 5. Select **Integration** as the category and click **Add**
 6. Close the dialog — the Daze Wallbox integration should now appear in HACS
