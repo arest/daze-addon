@@ -26,15 +26,6 @@ from .const import (
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
 )
-
-# Map numeric evseState values from the API to human-readable status strings
-_EVSE_STATE_TO_STATUS: dict[int, str] = {
-    0: "idle",
-    1: "charging",
-    2: "paused",
-    3: "charging",
-}
-
 from .models import RechargeSession
 
 _LOGGER = logging.getLogger(__name__)
@@ -141,38 +132,13 @@ class DazeDataUpdateCoordinator(
         self._total_updates += 1
 
         try:
-            raw_data = await self._api_client.async_get_socket_remote_info(
+            data = await self._api_client.async_get_socket_remote_info(
                 self._serial_number
             )
             _LOGGER.debug(
                 "Coordinator fetched socket data for %s",
                 self._serial_number,
             )
-
-            # --- Flatten nested chargeSession into top level ---
-            # The API nests live metrics (instant power, delivered energy,
-            # per-phase currents/voltages) inside a chargeSession object.
-            # Flatten so sensors can read them directly without nesting
-            # awareness.
-            data = dict(raw_data)
-            charge_session: dict[str, Any] | None = data.pop(
-                "chargeSession", None
-            )
-            if isinstance(charge_session, dict):
-                data.update(charge_session)
-
-            # --- Add mapped string status from numeric evseState ---
-            # The API returns evseState as an integer; add evseStatus as
-            # a human-readable string so existing entity code works.
-            evse_state = data.get("evseState")
-            if evse_state is not None:
-                data["evseStatus"] = _EVSE_STATE_TO_STATUS.get(
-                    int(evse_state), str(evse_state)
-                )
-
-            # Mirror evseIsThreePhase to is_three_phase for sensor compat
-            if "evseIsThreePhase" in data:
-                data["is_three_phase"] = data["evseIsThreePhase"]
         except ApiAuthError as err:
             self._last_fail_time = time.time()
             self._consecutive_failures += 1
@@ -210,12 +176,9 @@ class DazeDataUpdateCoordinator(
         data.update(self._compute_session_fields(sessions))
 
         _LOGGER.debug(
-            "Coordinator data for %s: %d sessions loaded, "
-            "evseState=%s, instantPower=%s",
+            "Coordinator data for %s: %d sessions loaded",
             self._serial_number,
             len(sessions),
-            data.get("evseState"),
-            data.get("instantPowerAsWatt"),
         )
 
         return data
