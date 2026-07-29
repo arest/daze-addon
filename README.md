@@ -2,7 +2,7 @@
 
 [![HA Community](https://img.shields.io/badge/Home%20Assistant-2025.x-41BDF5?logo=homeassistant)](https://www.home-assistant.io/)
 [![HACS Validation](https://github.com/arest/daze-addon/actions/workflows/validate.yaml/badge.svg)](https://github.com/arest/daze-addon/actions/workflows/validate.yaml)
-[![GitHub](https://img.shields.io/github/license/andrea/daze-addon)](LICENSE)
+[![GitHub](https://img.shields.io/github/license/arest/daze-addon)](LICENSE)
 
 Home Assistant integration for **Daze WallBox EV chargers**. Monitor charging metrics in real time and control your wallbox directly from your HA dashboard — no separate app required.
 
