@@ -1,0 +1,41 @@
+name: auto-merge
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    runs-on: ubuntu-latest
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.user.login == github.repository_owner
+    steps:
+      - name: Check auto-merge app credentials
+        id: preflight
+        run: |
+          if [ -z "${{ vars.AUTO_MERGE_APP_ID }}" ] || [ -z "${{ secrets.AUTO_MERGE_APP_PRIVATE_KEY }}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Auto-merge credentials missing; skipping."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint app installation token
+        if: steps.preflight.outputs.configured == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@v3.2.0
+        with:
+          app-id: ${{ vars.AUTO_MERGE_APP_ID }}
+          private-key: ${{ secrets.AUTO_MERGE_APP_PRIVATE_KEY }}
+
+      - name: Enable auto-merge (squash)
+        if: steps.preflight.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
