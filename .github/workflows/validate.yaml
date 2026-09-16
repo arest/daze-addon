@@ -2,9 +2,9 @@ name: Validate
 
 on:
   push:
-    branches: [master, "feature/*"]
+    branches: [main, "feature/*"]
   pull_request:
-    branches: [master]
+    branches: [main]
   schedule:
     - cron: "0 0 * * 0"  # Weekly validation
 
