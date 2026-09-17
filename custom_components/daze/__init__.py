@@ -6,9 +6,9 @@ import logging
 from typing import TYPE_CHECKING
 
 import voluptuous as vol
-
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
-from homeassistant.helpers import config_validation as cv, device_registry as dr
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
 
 from .api import ApiAuthError, ApiError
 from .const import (
@@ -28,8 +28,7 @@ from .coordinator import DazeDataUpdateCoordinator, async_setup_coordinator
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.core import HomeAssistant
-    from homeassistant.helpers.typing import ConfigType
+    from homeassistant.core import HomeAssistant, ServiceCall
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -132,7 +131,7 @@ def _async_register_services(
     api_client = coordinator.api_client
     serial_number = coordinator.serial_number
 
-    async def _handle_start_charge(call: ConfigType) -> None:
+    async def _handle_start_charge(call: ServiceCall) -> None:
         """Start charging."""
         try:
             await api_client.async_start_charge(serial_number)
@@ -147,7 +146,7 @@ def _async_register_services(
                 f"Failed to start charging: {err}"
             ) from err
 
-    async def _handle_stop_charge(call: ConfigType) -> None:
+    async def _handle_stop_charge(call: ServiceCall) -> None:
         """Stop charging."""
         try:
             await api_client.async_stop_charge(serial_number)
@@ -162,7 +161,7 @@ def _async_register_services(
                 f"Failed to stop charging: {err}"
             ) from err
 
-    async def _handle_set_charging_current(call: ConfigType) -> None:
+    async def _handle_set_charging_current(call: ServiceCall) -> None:
         """Set the maximum charging current."""
         current: int = call.data["current"]
         try:

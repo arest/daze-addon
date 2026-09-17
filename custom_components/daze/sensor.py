@@ -6,6 +6,10 @@ device classes, state classes, and units of measurement.
 
 from __future__ import annotations
 
+# Pyright (with homeassistant-stubs) models some entity accessors as
+# cached_property fields; Home Assistant integrations override them with
+# @property methods by design.
+# pyright: reportIncompatibleVariableOverride=false
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -284,55 +288,6 @@ SENSORS: tuple[DazeSensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_get_next_scheduled_charge,
     ),
-    # --- Session sensors ---
-    DazeSensorEntityDescription(
-        key="last_session_energy",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
-        value_fn=lambda data: data.get("last_session_energy"),
-    ),
-    DazeSensorEntityDescription(
-        key="last_session_duration",
-        native_unit_of_measurement=UnitOfTime.MINUTES,
-        value_fn=lambda data: data.get("last_session_duration"),
-    ),
-    DazeSensorEntityDescription(
-        key="last_session_cost",
-        device_class=SensorDeviceClass.MONETARY,
-        native_unit_of_measurement="EUR",
-        value_fn=lambda data: data.get("last_session_cost"),
-    ),
-    DazeSensorEntityDescription(
-        key="last_session_start",
-        device_class=SensorDeviceClass.TIMESTAMP,
-        value_fn=lambda data: data.get("last_session_start"),
-    ),
-    DazeSensorEntityDescription(
-        key="last_session_end",
-        device_class=SensorDeviceClass.TIMESTAMP,
-        value_fn=lambda data: data.get("last_session_end"),
-    ),
-    # --- Aggregate counters ---
-    DazeSensorEntityDescription(
-        key="lifetime_energy",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
-        value_fn=lambda data: data.get("lifetime_energy"),
-    ),
-    DazeSensorEntityDescription(
-        key="total_sessions",
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda data: data.get("total_sessions"),
-    ),
-    # --- Diagnostic sensors ---
-    DazeSensorEntityDescription(
-        key="next_scheduled_charge",
-        device_class=SensorDeviceClass.TIMESTAMP,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_get_next_scheduled_charge,
-    ),
 )
 
 
@@ -353,32 +308,6 @@ _RESTORE_STATE_KEYS: frozenset[str] = frozenset({
 These are cumulative or infrequently-changing values where losing the
 last known state would cause visible gaps in history or dashboards.
 """
-
-
-_SCHEDULED_CHARGE_KEYS = (
-    "nextScheduledCharge",
-    "scheduledChargeTime",
-    "scheduledStart",
-    "scheduleTime",
-)
-"""Possible API field names for scheduled charge time.
-
-Checked in order — the first non-None value wins.
-"""
-
-
-def _get_next_scheduled_charge(data: dict[str, Any]) -> Any | None:
-    """Extract the next scheduled charge time from coordinator data.
-
-    Tries multiple possible API field names to accommodate variations
-    in the Daze API response. Returns None if no scheduling data is
-    available (scheduling not active or not supported).
-    """
-    for key in _SCHEDULED_CHARGE_KEYS:
-        value = data.get(key)
-        if value is not None:
-            return value
-    return None
 
 
 # ------------------------------------------------------------------

@@ -4,10 +4,10 @@
   "codeowners": ["@arest"],
   "config_flow": true,
   "dependencies": [],
-  "issue_tracker": "https://github.com/arest/daze-addon/issues",
   "documentation": "https://github.com/arest/daze-addon",
   "integration_type": "device",
   "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/arest/daze-addon/issues",
   "requirements": [],
   "version": "0.1.0"
 }
