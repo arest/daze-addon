@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 # ------------------------------------------------------------------
@@ -64,7 +64,7 @@ def _parse_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value)
+        return datetime.fromtimestamp(value, tz=timezone.utc)
 
     # Try ISO 8601 string parsing
     try:

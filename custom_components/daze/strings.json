@@ -1,6 +1,6 @@
 {
+  "title": "Daze Wallbox",
   "config": {
-    "title": "Daze Wallbox",
     "step": {
       "user": {
         "data": {
@@ -34,10 +34,6 @@
       "already_configured": "This wallbox is already configured.",
       "reauth_successful": "Re-authentication was successful."
     }
-  },
-  "reauth": {
-    "title": "Re-authenticate Daze Wallbox",
-    "description": "Your Daze tokens have expired. Please enter new access and refresh tokens to restore the integration."
   },
   "services": {
     "set_charging_current": {
@@ -89,16 +85,13 @@
         "name": "EVSE Status"
       },
       "grid_max_power": {
-        "name": "Grid Max Power",
-        "entity_category": "diagnostic"
+        "name": "Grid Max Power"
       },
       "is_photovoltaic": {
-        "name": "Photovoltaic Present",
-        "entity_category": "diagnostic"
+        "name": "Photovoltaic Present"
       },
       "is_three_phase": {
-        "name": "Three-Phase Supply",
-        "entity_category": "diagnostic"
+        "name": "Three-Phase Supply"
       },
       "last_session_energy": {
         "name": "Last Session Energy"
@@ -122,8 +115,7 @@
         "name": "Total Sessions"
       },
       "next_scheduled_charge": {
-        "name": "Next Scheduled Charge",
-        "entity_category": "diagnostic"
+        "name": "Next Scheduled Charge"
       }
     },
     "switch": {
@@ -133,8 +125,7 @@
     },
     "number": {
       "max_charging_current": {
-        "name": "Max Charging Current",
-        "entity_category": "config"
+        "name": "Max Charging Current"
       }
     },
     "select": {

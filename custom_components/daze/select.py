@@ -7,9 +7,14 @@ scheduled mode is reserved for future schedule-based control.
 
 from __future__ import annotations
 
+# Pyright (with homeassistant-stubs) models some entity accessors as
+# cached_property fields; Home Assistant integrations override them with
+# @property methods by design.
+# pyright: reportIncompatibleVariableOverride=false
 import logging
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.components import persistent_notification
 from homeassistant.components.select import SelectEntity
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -163,9 +168,9 @@ class DazeWallboxSelectEntity(
 
     def _notify_error(self, message: str) -> None:
         """Show a persistent notification in the HA frontend."""
-        self.hass.components.persistent_notification.async_create(
-            hass=self.hass,
-            message=message,
+        persistent_notification.async_create(
+            self.hass,
+            message,
             title="Daze Wallbox — Operation Mode Error",
             notification_id=f"daze_select_error_{self._serial_number}",
         )

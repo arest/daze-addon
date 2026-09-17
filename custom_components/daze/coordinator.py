@@ -280,11 +280,10 @@ class DazeDataUpdateCoordinator(
             )
             return []
 
-        except Exception as err:
+        except Exception:
             _LOGGER.exception(
-                "Unexpected error fetching sessions for %s: %s",
+                "Unexpected error fetching sessions for %s",
                 self._serial_number,
-                err,
             )
             return []
 

@@ -6,10 +6,13 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DazeApiClient
@@ -108,7 +111,7 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step — token entry.
 
         The user provides their Daze access token and refresh token.
@@ -154,7 +157,7 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_network(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the network selection step."""
         errors: dict[str, str] = {}
 
@@ -230,7 +233,7 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_confirm(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the confirmation step — fetches EVSE info and creates the entry."""
         errors: dict[str, str] = {}
 
@@ -314,10 +317,10 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
                 ): str,
             }),
             description_placeholders={
-                "network_name": self._network_name or "",
-                "evse_name": original_evse_name,
-                "serial_number": self._serial_number,
-                "device_profile": self._device_profile,
+                "network_name": str(self._network_name or ""),
+                "evse_name": str(original_evse_name),
+                "serial_number": str(self._serial_number or ""),
+                "device_profile": str(self._device_profile or ""),
             },
             errors=errors,
         )
@@ -328,11 +331,12 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle re-authentication when tokens are expired/invalid."""
-        self._reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
+        entry_id = self.context.get("entry_id")
+        assert isinstance(entry_id, str)
+
+        self._reauth_entry = self.hass.config_entries.async_get_entry(entry_id)
         return await self.async_step_user()
 
     @staticmethod
@@ -353,7 +357,7 @@ class DazeOptionsFlowHandler(OptionsFlow):
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
