@@ -186,6 +186,78 @@ def build_candidates(network_uid: str, serial: str, email: str) -> list[str]:
     return candidates
 
 
+def discover(access_token: str, email: str) -> tuple[str, str]:
+    """Look up the network UID and wallbox serial from the API.
+
+    Mirrors what the config flow does, so the probe needs nothing typed
+    beyond the refresh token.
+
+    Returns:
+        A tuple of (network_uid, serial). Either may be empty if
+        discovery failed.
+
+    """
+    if not email:
+        return "", ""
+
+    mail = urllib.parse.quote(email, safe="")
+    status, body = probe_raw(
+        access_token, f"/users/{mail}/networks?includeStats=true"
+    )
+
+    networks = body.get("data") if isinstance(body, dict) else None
+    if status != 200 or not isinstance(networks, list) or not networks:
+        print(f"  Could not list networks (HTTP {status}).")
+        return "", ""
+
+    print(f"  Networks found: {len(networks)}")
+    for net in networks:
+        if isinstance(net, dict):
+            print(f"    - {net.get('name', '?')}  uid={net.get('uid', '?')}")
+
+    first = networks[0] if isinstance(networks[0], dict) else {}
+    network_uid = str(first.get("uid", ""))
+    if not network_uid:
+        return "", ""
+
+    uid = urllib.parse.quote(network_uid, safe="")
+    status, body = probe_raw(
+        access_token, f"/networks/{uid}/evses?includeEcoInfo=false"
+    )
+
+    evses = body.get("data") if isinstance(body, dict) else None
+    if status != 200 or not isinstance(evses, list) or not evses:
+        print(f"  Could not list chargers (HTTP {status}).")
+        return network_uid, ""
+
+    print(f"  Chargers found: {len(evses)}")
+    for evse in evses:
+        if isinstance(evse, dict):
+            print(
+                f"    - {evse.get('evseName', '?')}  "
+                f"serial={evse.get('serialNumber', '?')}"
+            )
+
+    if len(evses) > 1:
+        print(
+            "  NOTE: more than one charger. The integration only ever "
+            "uses the first (config_flow.py:304)."
+        )
+
+    first_evse = evses[0] if isinstance(evses[0], dict) else {}
+    return network_uid, str(first_evse.get("serialNumber", ""))
+
+
+def probe_raw(access_token: str, path: str) -> tuple[int, object]:
+    """GET one API path and return the raw status and parsed body."""
+    request = urllib.request.Request(
+        f"{API_BASE_URL}{path}",
+        headers={"authorization": f"Bearer {access_token}"},
+        method="GET",
+    )
+    return _send(request)
+
+
 def main() -> int:
     """Probe every candidate endpoint and summarise the findings."""
     print("Daze recharge-session endpoint probe")
@@ -197,19 +269,24 @@ def main() -> int:
         print("A refresh token is required.")
         return 3
 
-    network_uid = input("Network UID: ").strip()
-    serial = input("Wallbox serial number: ").strip()
-
-    if not network_uid or not serial:
-        print("Both the network UID and the serial number are required.")
-        return 3
-
     print("\nRefreshing the access token...")
     access_token = refresh_access_token(refresh_token)
     print("Got a fresh access token.")
 
     email = get_email(access_token)
     print(f"Account email resolved: {'yes' if email else 'no'}")
+
+    print("\nDiscovering network and charger (same calls as the config flow):")
+    network_uid, serial = discover(access_token, email)
+
+    if not network_uid:
+        network_uid = input("  Network UID (discovery failed): ").strip()
+    if not serial:
+        serial = input("  Wallbox serial (discovery failed): ").strip()
+
+    if not network_uid or not serial:
+        print("Need both a network UID and a serial to continue.")
+        return 3
 
     candidates = build_candidates(network_uid, serial, email)
 
