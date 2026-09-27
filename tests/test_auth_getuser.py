@@ -291,6 +291,47 @@ def test_userinfo_endpoint_is_gone() -> None:
     assert not offenders, f"userInfo used in: {offenders}"
 
 
+
+def test_404_raises_api_not_found_without_logging_body() -> None:
+    """A 404 must raise ApiNotFoundError so callers can back off.
+
+    The recharge-session endpoint returns 404 with an empty body for
+    some accounts. Treating that as a generic ApiError made the
+    coordinator retry and log a warning on every poll.
+    """
+    session = FakeSession([FakeResponse(404, {"_empty": True})])
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    try:
+        asyncio.run(api_client.async_get_recharge_sessions("net-uid"))
+    except api.ApiNotFoundError as err:
+        assert "404" in str(err)
+    else:
+        raise AssertionError("expected ApiNotFoundError")
+
+
+def test_api_not_found_is_an_api_error() -> None:
+    """Existing handlers catching ApiError must still catch 404s."""
+    assert issubclass(api.ApiNotFoundError, api.ApiError)
+
+
+def test_non_404_errors_still_raise_plain_api_error() -> None:
+    """A 500 must remain a plain ApiError, not a not-found."""
+    session = FakeSession([FakeResponse(500, {"message": "boom"})])
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    try:
+        asyncio.run(api_client.async_get_recharge_sessions("net-uid"))
+    except api.ApiNotFoundError:
+        raise AssertionError("500 must not be ApiNotFoundError")
+    except api.ApiError as err:
+        assert "500" in str(err)
+    else:
+        raise AssertionError("expected ApiError")
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

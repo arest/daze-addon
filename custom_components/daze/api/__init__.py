@@ -31,6 +31,15 @@ class ApiError(Exception):
     """Raised for non-auth API errors (4xx, 5xx, network issues)."""
 
 
+class ApiNotFoundError(ApiError):
+    """Raised when the API answers 404 for a resource.
+
+    Subclasses ApiError so existing handlers keep working, while letting
+    callers treat a missing resource as a durable condition rather than
+    a transient failure worth retrying every poll.
+    """
+
+
 def _flatten_user_attributes(payload: dict[str, Any]) -> dict[str, Any]:
     """Flatten a Cognito GetUser response into a plain attribute dict.
 
@@ -135,6 +144,14 @@ class DazeApiClient:
                     )
                     return await self._handle_401(method, url, **kwargs)
 
+                if response.status == 404:
+                    # Logged by the caller, which knows whether a
+                    # missing resource is expected. Logging here too
+                    # would duplicate every message.
+                    raise ApiNotFoundError(
+                        f"API {method} {url} returned 404"
+                    )
+
                 if response.status >= 400:
                     body = await response.text()
                     _LOGGER.warning(
@@ -212,6 +229,11 @@ class DazeApiClient:
                     raise ApiAuthError(
                         "Authentication failed after token refresh, "
                         "re-authentication required"
+                    )
+
+                if response.status == 404:
+                    raise ApiNotFoundError(
+                        f"API {method} {url} returned 404"
                     )
 
                 if response.status >= 400:

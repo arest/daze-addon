@@ -16,7 +16,7 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from .api import ApiAuthError, ApiError, DazeApiClient
+from .api import ApiAuthError, ApiError, ApiNotFoundError, DazeApiClient
 from .api.auth import DazeAuthClient
 from .const import (
     CONF_ACCESS_TOKEN,
@@ -31,6 +31,16 @@ from .models import RechargeSession
 _LOGGER = logging.getLogger(__name__)
 
 type DazeCoordinatorData = dict[str, Any]
+
+# Session history changes only when a charge ends, so it does not need
+# the live metric cadence. Re-requesting the full history on every poll
+# was wasteful and risked upstream rate limiting.
+SESSION_FETCH_INTERVAL = 300  # seconds
+
+# Some accounts get HTTP 404 from the recharge-session endpoint. That is
+# a durable condition, not a transient error, so back off hard instead
+# of retrying every poll and filling the log with warnings.
+SESSION_MISSING_RETRY_INTERVAL = 3600  # seconds
 
 
 class DazeDataUpdateCoordinator(
@@ -68,6 +78,9 @@ class DazeDataUpdateCoordinator(
         self._last_fail_time: float | None = None
         self._total_updates: int = 0
         self._consecutive_failures: int = 0
+        self._cached_sessions: list[RechargeSession] = []
+        self._next_session_fetch: float = 0.0
+        self._sessions_missing_logged: bool = False
 
         super().__init__(
             hass,
@@ -170,8 +183,12 @@ class DazeDataUpdateCoordinator(
         self._last_success_time = time.time()
         self._consecutive_failures = 0
 
-        # Fetch session data (secondary — failures are non-fatal)
-        sessions = await self._async_fetch_sessions()
+        # Fetch session data (secondary — failures are non-fatal).
+        # Throttled: history only changes when a charge ends.
+        if time.time() >= self._next_session_fetch:
+            self._cached_sessions = await self._async_fetch_sessions()
+
+        sessions = self._cached_sessions
         data["sessions"] = sessions
         data.update(self._compute_session_fields(sessions))
 
@@ -245,6 +262,8 @@ class DazeDataUpdateCoordinator(
             A list of RechargeSession objects (may be empty).
 
         """
+        self._next_session_fetch = time.time() + SESSION_FETCH_INTERVAL
+
         try:
             sessions_raw = (
                 await self._api_client.async_get_recharge_sessions(
@@ -256,9 +275,29 @@ class DazeDataUpdateCoordinator(
                 len(sessions_raw),
                 self._network_uid,
             )
+            self._sessions_missing_logged = False
             return [
                 RechargeSession.from_dict(s) for s in sessions_raw
             ]
+
+        except ApiNotFoundError:
+            # The endpoint is absent for this account. Say so once, then
+            # back off: retrying every poll only spams the log.
+            self._next_session_fetch = (
+                time.time() + SESSION_MISSING_RETRY_INTERVAL
+            )
+
+            if not self._sessions_missing_logged:
+                self._sessions_missing_logged = True
+                _LOGGER.info(
+                    "Recharge session history is unavailable for network "
+                    "%s (the API returned 404). Session and lifetime "
+                    "sensors will stay empty; live metrics and charge "
+                    "control are unaffected. Retrying hourly.",
+                    self._network_uid,
+                )
+
+            return []
 
         except ApiAuthError:
             # Auth errors on session endpoint are unexpected (the
