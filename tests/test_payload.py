@@ -408,6 +408,51 @@ def test_waiting_state_is_a_declared_sensor_option() -> None:
     assert spec.value_fn(_waiting_payload()) == "waiting_for_ev"
 
 
+
+# ------------------------------------------------------------------
+# Optimistic switch state
+# ------------------------------------------------------------------
+
+
+def test_no_guess_reports_the_charger() -> None:
+    """With nothing commanded, the charger's reading is the answer."""
+    assert payload.resolve_optimistic(None, True, False) == (True, False)
+    assert payload.resolve_optimistic(None, False, False) == (False, False)
+    assert payload.resolve_optimistic(None, None, False) == (None, False)
+
+
+def test_guess_wins_while_the_cloud_still_reports_the_old_state() -> None:
+    """This is the flip-back the optimistic state exists to prevent."""
+    value, keep = payload.resolve_optimistic(True, False, False)
+    assert value is True
+    assert keep is True
+
+
+def test_guess_is_dropped_once_the_charger_agrees() -> None:
+    """Holding it longer than needed would delay real changes."""
+    value, keep = payload.resolve_optimistic(True, True, False)
+    assert value is True
+    assert keep is False
+
+
+def test_guess_is_abandoned_when_it_expires() -> None:
+    """A command that silently failed must not leave the UI lying.
+
+    Once the window passes, the charger's reading wins even though it
+    contradicts what was commanded.
+    """
+    value, keep = payload.resolve_optimistic(True, False, True)
+    assert value is False
+    assert keep is False
+
+
+def test_guess_survives_a_missing_reading() -> None:
+    """An unknown reading is not agreement, so keep the guess."""
+    value, keep = payload.resolve_optimistic(False, None, False)
+    assert value is False
+    assert keep is True
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

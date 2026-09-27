@@ -25,10 +25,14 @@ from .const import (
     CONF_FIRMWARE_VERSION,
     CONF_NETWORK_NAME,
     CONF_NETWORK_UID,
+    CONF_POLL_INTERVAL,
     CONF_REFRESH_TOKEN,
     CONF_SERIAL_NUMBER,
     CONF_SOFTWARE_VERSION,
+    DEFAULT_POLL_INTERVAL,
     DOMAIN,
+    MAX_POLL_INTERVAL,
+    MIN_POLL_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -358,8 +362,31 @@ class DazeOptionsFlowHandler(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the options."""
+        """Let the user choose how often the charger is polled.
+
+        Faster polling makes the entities more responsive at the cost
+        of more requests against the Daze cloud API. The entry reloads
+        on save, so the new interval takes effect immediately.
+        """
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        return self.async_show_form(step_id="init", data_schema=vol.Schema({}))
+        current = self._config_entry.options.get(
+            CONF_POLL_INTERVAL,
+            self._config_entry.data.get(
+                CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL
+            ),
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_POLL_INTERVAL, default=current
+                ): vol.All(
+                    vol.Coerce(int),
+                    vol.Range(min=MIN_POLL_INTERVAL, max=MAX_POLL_INTERVAL),
+                )
+            }
+        )
+
+        return self.async_show_form(step_id="init", data_schema=schema)

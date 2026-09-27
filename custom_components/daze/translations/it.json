@@ -147,5 +147,16 @@
         "name": "Modalità operativa"
       }
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opzioni Daze Wallbox",
+        "description": "Ogni quanto interrogare l'API cloud di Daze. Valori bassi rendono le entità più reattive ma inviano più richieste.",
+        "data": {
+          "poll_interval": "Intervallo di aggiornamento (secondi)"
+        }
+      }
+    }
   }
 }

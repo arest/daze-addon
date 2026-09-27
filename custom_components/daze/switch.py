@@ -12,17 +12,23 @@ from __future__ import annotations
 # @property methods by design.
 # pyright: reportIncompatibleVariableOverride=false
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import ApiAuthError, ApiCommandRejectedError, ApiError
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    OPTIMISTIC_STATE_TIMEOUT,
+    POST_COMMAND_REFRESH_DELAY,
+)
 from .coordinator import DazeDataUpdateCoordinator
-from .payload import is_charge_enabled
+from .payload import is_charge_enabled, resolve_optimistic
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -62,6 +68,8 @@ class DazeWallboxSwitchEntity(
         self._serial_number = serial_number
         self._attr_unique_id = f"{serial_number}_charge_switch"
         self._attr_device_info = device_info
+        self._optimistic_state: bool | None = None
+        self._optimistic_since: float = 0.0
 
     @property
     def is_on(self) -> bool | None:
@@ -69,12 +77,67 @@ class DazeWallboxSwitchEntity(
 
         Includes the waiting-for-EV state. The charger passes through
         it after a start takes effect, before the car begins drawing.
-        Reporting off there would make the toggle snap back moments
-        after the user switched it on, even though the command worked.
+
+        Immediately after a command, the commanded value is reported
+        instead of the charger's reading. The cloud API takes several
+        seconds to reflect a change, so reporting the reading during
+        that window shows the old state and makes the toggle flip back.
         """
-        if self.coordinator.data is None:
-            return None
-        return is_charge_enabled(self.coordinator.data)
+        actual = (
+            is_charge_enabled(self.coordinator.data)
+            if self.coordinator.data is not None
+            else None
+        )
+
+        value, keep = resolve_optimistic(
+            self._optimistic_state, actual, self._optimistic_expired
+        )
+
+        if not keep:
+            self._optimistic_state = None
+
+        return value
+
+    @property
+    def _optimistic_expired(self) -> bool:
+        """Whether the optimistic value has been held too long."""
+        if self._optimistic_state is None:
+            return True
+        held = time.monotonic() - self._optimistic_since
+        return held > OPTIMISTIC_STATE_TIMEOUT
+
+    @property
+    def assumed_state(self) -> bool:
+        """Tell the frontend when the shown state is a guess."""
+        return self._optimistic_state is not None
+
+    def _set_optimistic(self, value: bool) -> None:
+        """Show the commanded state now and re-read the charger later.
+
+        Refreshing immediately is worse than not refreshing at all: the
+        cloud still reports the old state, so the entity would flip
+        back before settling.
+        """
+        self._optimistic_state = value
+        self._optimistic_since = time.monotonic()
+        self.async_write_ha_state()
+        self.coordinator.async_schedule_refresh_in(
+            POST_COMMAND_REFRESH_DELAY
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Drop the guess once the charger agrees with it."""
+        if self._optimistic_state is not None:
+            actual = (
+                is_charge_enabled(self.coordinator.data)
+                if self.coordinator.data is not None
+                else None
+            )
+            if actual == self._optimistic_state or self._optimistic_expired:
+                self._optimistic_state = None
+
+        super()._handle_coordinator_update()
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Start charging on the wallbox."""
@@ -92,8 +155,7 @@ class DazeWallboxSwitchEntity(
             # No session ID passed: the client reads a current one.
             # The coordinator's copy can name a session that has ended.
             await self._api_client.async_start_charge(self._serial_number)
-            await self.coordinator.async_request_refresh()
-            self.coordinator.async_schedule_settle_refresh()
+            self._set_optimistic(True)
         except ApiAuthError as err:
             _LOGGER.warning(
                 "Auth error starting charge on %s: %s",
@@ -139,8 +201,7 @@ class DazeWallboxSwitchEntity(
                 "Stopping charge on wallbox %s", self._serial_number
             )
             await self._api_client.async_stop_charge(self._serial_number)
-            await self.coordinator.async_request_refresh()
-            self.coordinator.async_schedule_settle_refresh()
+            self._set_optimistic(False)
         except ApiAuthError as err:
             _LOGGER.warning(
                 "Auth error stopping charge on %s: %s",

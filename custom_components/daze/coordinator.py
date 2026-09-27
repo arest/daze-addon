@@ -22,10 +22,13 @@ from .api.auth import DazeAuthClient
 from .const import (
     CONF_ACCESS_TOKEN,
     CONF_NETWORK_UID,
+    CONF_POLL_INTERVAL,
     CONF_REFRESH_TOKEN,
     CONF_SERIAL_NUMBER,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
+    MAX_POLL_INTERVAL,
+    MIN_POLL_INTERVAL,
 )
 from .models import RechargeSession
 from .payload import merge_payload
@@ -142,6 +145,27 @@ class DazeDataUpdateCoordinator(
     def network_uid(self) -> str:
         """Return the network UID."""
         return self._network_uid
+
+    def async_schedule_refresh_in(self, delay: int) -> None:
+        """Re-read the charger once, after a delay.
+
+        Used after a command. Refreshing immediately reads the state
+        from before the change, because the cloud API lags the charger
+        by several seconds.
+
+        Scheduled, not awaited: the caller returns immediately.
+        """
+
+        async def _refresh(_now: Any) -> None:
+            """Ask the coordinator to re-read the charger."""
+            _LOGGER.debug(
+                "Post-command refresh for %s at +%ss",
+                self._serial_number,
+                delay,
+            )
+            await self.async_request_refresh()
+
+        async_call_later(self.hass, delay, _refresh)
 
     def async_schedule_settle_refresh(self) -> None:
         """Re-read the charger a few times after a command.
@@ -407,6 +431,19 @@ async def async_setup_coordinator(
         The initialised DazeDataUpdateCoordinator.
 
     """
+    # Options win over the value captured at setup, so changing the
+    # interval takes effect on reload without reconfiguring.
+    poll_interval = entry.options.get(
+        CONF_POLL_INTERVAL,
+        entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+    )
+    try:
+        poll_interval = int(poll_interval)
+    except (TypeError, ValueError):
+        poll_interval = DEFAULT_POLL_INTERVAL
+
+    poll_interval = max(MIN_POLL_INTERVAL, min(MAX_POLL_INTERVAL, poll_interval))
+
     access_token = entry.data[CONF_ACCESS_TOKEN]
     refresh_token = entry.data[CONF_REFRESH_TOKEN]
     serial_number = entry.data[CONF_SERIAL_NUMBER]
@@ -421,6 +458,11 @@ async def async_setup_coordinator(
         api_client=api_client,
         serial_number=serial_number,
         network_uid=network_uid,
+        poll_interval=poll_interval,
+    )
+
+    _LOGGER.debug(
+        "Coordinator for %s polling every %ss", serial_number, poll_interval
     )
 
     # Perform first refresh to populate coordinator data

@@ -141,5 +141,16 @@
         "name": "Operation Mode"
       }
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Daze Wallbox options",
+        "description": "How often to poll the Daze cloud API. Lower values make the entities more responsive but send more requests.",
+        "data": {
+          "poll_interval": "Polling interval (seconds)"
+        }
+      }
+    }
   }
 }

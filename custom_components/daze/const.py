@@ -38,6 +38,24 @@ CONF_POLL_INTERVAL = "poll_interval"
 
 # Coordinator defaults
 DEFAULT_POLL_INTERVAL = 30  # seconds
+
+# Bounds for the user-configurable poll interval. The lower bound keeps
+# the cloud API from being hammered; the upper bound keeps the entities
+# from going obviously stale.
+MIN_POLL_INTERVAL = 10  # seconds
+MAX_POLL_INTERVAL = 600  # seconds
+
+# How long an optimistic switch state is trusted before the charger's
+# own reading takes over again. Observed transitions completed in 9 to
+# 12 seconds, so this both covers them and bounds how long the UI can
+# disagree with reality if a command silently fails.
+OPTIMISTIC_STATE_TIMEOUT = 20  # seconds
+
+# When to re-read the charger after a command. Late enough that the
+# transition has happened, rather than immediately, which reads the old
+# state back and makes the toggle appear to flip back.
+POST_COMMAND_REFRESH_DELAY = 10  # seconds
+
 DEFAULT_TOKEN_EXPIRY_BUFFER = 60  # seconds
 
 # Platform list
