@@ -26,19 +26,22 @@ from typing import Any
 # EVSE state values confirmed against live hardware:
 #
 #   3  charging  observed while delivering 2688 W with a session running
-#   5  connected observed immediately after resuming: isPaused cleared
-#                and evseSuspensionReason zero, but still drawing 0 W.
-#                Reported as idle because no energy is flowing.
+#   5  waiting   observed immediately after a start or resume takes
+#                effect: isPaused cleared and evseSuspensionReason
+#                zero, but still drawing 0 W. The session is live and
+#                authorised; the car has not begun drawing yet. The
+#                charger passes through this on its way to 3.
 #   6  paused    observed with isPaused true, evseSuspensionReason 3,
 #                zero instant power, and the session still open
 #
 # Other values remain unknown, so an unrecognised state reports "idle"
 # rather than inventing a meaning.
 EVSE_STATE_CHARGING = 3
-EVSE_STATE_CONNECTED = 5
+EVSE_STATE_WAITING_FOR_EV = 5
 EVSE_STATE_PAUSED = 6
 
 STATUS_CHARGING = "charging"
+STATUS_WAITING_FOR_EV = "waiting_for_ev"
 STATUS_IDLE = "idle"
 STATUS_PAUSED = "paused"
 STATUS_ERROR = "error"
@@ -100,6 +103,9 @@ def derive_status(data: dict[str, Any]) -> str | None:
     if state == EVSE_STATE_PAUSED:
         return STATUS_PAUSED
 
+    if state == EVSE_STATE_WAITING_FOR_EV:
+        return STATUS_WAITING_FOR_EV
+
     return STATUS_IDLE
 
 
@@ -153,3 +159,28 @@ def merge_payload(
         merged["evseStatus"] = status
 
     return merged
+
+
+# States in which charging is enabled, whether or not energy is
+# currently flowing. The charge switch reads this so that it does not
+# snap back to off while the charger waits for the car to draw.
+ACTIVE_STATUSES = frozenset({STATUS_CHARGING, STATUS_WAITING_FOR_EV})
+
+
+def is_charge_enabled(data: dict[str, Any]) -> bool | None:
+    """Return whether a charge is authorised and under way.
+
+    True while charging and while waiting for the EV to start drawing,
+    because the user's intent has been carried out in both cases.
+
+    Args:
+        data: The merged payload.
+
+    Returns:
+        True, False, or None when the status is unknown.
+
+    """
+    status = data.get("evseStatus")
+    if status is None:
+        return None
+    return str(status).lower() in ACTIVE_STATUSES

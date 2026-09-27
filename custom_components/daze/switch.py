@@ -22,6 +22,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .api import ApiAuthError, ApiCommandRejectedError, ApiError
 from .const import DOMAIN
 from .coordinator import DazeDataUpdateCoordinator
+from .payload import is_charge_enabled
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -76,13 +77,16 @@ class DazeWallboxSwitchEntity(
 
     @property
     def is_on(self) -> bool | None:
-        """Return True if the wallbox is currently charging."""
+        """Return True while a charge is authorised and under way.
+
+        Includes the waiting-for-EV state. The charger passes through
+        it after a start takes effect, before the car begins drawing.
+        Reporting off there would make the toggle snap back moments
+        after the user switched it on, even though the command worked.
+        """
         if self.coordinator.data is None:
             return None
-        status = self.coordinator.data.get("evseStatus")
-        if status is None:
-            return None
-        return str(status).lower() == CHARGING_STATE
+        return is_charge_enabled(self.coordinator.data)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Start charging on the wallbox."""
@@ -101,6 +105,7 @@ class DazeWallboxSwitchEntity(
                 self._serial_number, self._session_id
             )
             await self.coordinator.async_request_refresh()
+            self.coordinator.async_schedule_settle_refresh()
         except ApiAuthError as err:
             _LOGGER.warning(
                 "Auth error starting charge on %s: %s",
@@ -149,6 +154,7 @@ class DazeWallboxSwitchEntity(
                 self._serial_number, self._session_id
             )
             await self.coordinator.async_request_refresh()
+            self.coordinator.async_schedule_settle_refresh()
         except ApiAuthError as err:
             _LOGGER.warning(
                 "Auth error stopping charge on %s: %s",

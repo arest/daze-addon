@@ -83,7 +83,15 @@
         "name": "Temperatura involucro"
       },
       "evse_status": {
-        "name": "Stato EVSE"
+        "name": "Stato EVSE",
+        "state": {
+          "idle": "Inattivo",
+          "waiting_for_ev": "In attesa del veicolo",
+          "charging": "In carica",
+          "paused": "In pausa",
+          "error": "Errore",
+          "offline": "Non in linea"
+        }
       },
       "grid_max_power": {
         "name": "Potenza massima rete",

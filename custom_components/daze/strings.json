@@ -82,7 +82,15 @@
         "name": "Case Temperature"
       },
       "evse_status": {
-        "name": "EVSE Status"
+        "name": "EVSE Status",
+        "state": {
+          "idle": "Idle",
+          "waiting_for_ev": "Waiting for vehicle",
+          "charging": "Charging",
+          "paused": "Paused",
+          "error": "Error",
+          "offline": "Offline"
+        }
       },
       "grid_max_power": {
         "name": "Grid Max Power"

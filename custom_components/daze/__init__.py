@@ -148,6 +148,7 @@ def _async_register_services(
                 serial_number, _session_id()
             )
             await coordinator.async_request_refresh()
+            coordinator.async_schedule_settle_refresh()
         except ApiAuthError as err:
             raise ConfigEntryAuthFailed(
                 "Authentication failed when starting charge. "
@@ -165,6 +166,7 @@ def _async_register_services(
                 serial_number, _session_id()
             )
             await coordinator.async_request_refresh()
+            coordinator.async_schedule_settle_refresh()
         except ApiAuthError as err:
             raise ConfigEntryAuthFailed(
                 "Authentication failed when stopping charge. "
@@ -183,6 +185,7 @@ def _async_register_services(
                 serial_number, current
             )
             await coordinator.async_request_refresh()
+            coordinator.async_schedule_settle_refresh()
         except ApiAuthError as err:
             raise ConfigEntryAuthFailed(
                 "Authentication failed when setting charging current. "

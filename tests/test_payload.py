@@ -197,8 +197,12 @@ def test_inactive_reports_offline() -> None:
 
 
 def test_unknown_state_reports_idle_not_charging() -> None:
-    """Unconfirmed state values must never be reported as charging."""
-    for state in (0, 1, 2, 4, 5, 99):
+    """Unconfirmed state values must never be reported as charging.
+
+    3, 5 and 6 are confirmed and excluded; everything else is still a
+    guess and must fall back to idle.
+    """
+    for state in (0, 1, 2, 4, 7, 99):
         remote = {**REMOTE_INFO, "evseState": state}
         data = payload.merge_payload(remote, EVSE_RECORD)
         assert data["evseStatus"] == "idle", state
@@ -344,21 +348,64 @@ def test_paused_session_keeps_its_session_id() -> None:
 
 
 
-def test_state_5_is_connected_not_charging() -> None:
-    """Observed right after a resume: unpaused but drawing no power.
-
-    Reported as idle rather than charging, because no energy flows.
-    Calling it charging would make the switch read on while the car
-    takes nothing.
-    """
+def _waiting_payload() -> dict[str, Any]:
+    """Return the state seen right after a start takes effect."""
     remote = {
         **REMOTE_INFO_PAUSED,
         "evseState": 5,
         "evseSuspensionReason": 0,
         "isPaused": False,
     }
-    data = payload.merge_payload(remote, EVSE_RECORD)
-    assert data["evseStatus"] == "idle"
+    return payload.merge_payload(remote, EVSE_RECORD)
+
+
+def test_state_5_is_waiting_for_the_vehicle() -> None:
+    """Observed after a start: unpaused, authorised, drawing nothing.
+
+    Distinct from idle, which means no session at all, and from
+    charging, which means energy is flowing.
+    """
+    assert _waiting_payload()["evseStatus"] == "waiting_for_ev"
+
+
+def test_switch_stays_on_while_waiting_for_the_vehicle() -> None:
+    """The toggle must not snap back after a successful start.
+
+    The charger passes through waiting-for-EV on its way to charging.
+    Reporting off there would show the command as having failed.
+    """
+    assert payload.is_charge_enabled(_waiting_payload()) is True
+
+
+def test_switch_is_on_while_charging() -> None:
+    """The ordinary case still reads on."""
+    assert payload.is_charge_enabled(merged()) is True
+
+
+def test_switch_is_off_when_paused_or_idle() -> None:
+    """A paused or idle charger is not charging."""
+    paused = payload.merge_payload(REMOTE_INFO_PAUSED, EVSE_RECORD)
+    assert payload.is_charge_enabled(paused) is False
+
+    idle = payload.merge_payload(
+        {**REMOTE_INFO, "evseState": 1}, EVSE_RECORD
+    )
+    assert payload.is_charge_enabled(idle) is False
+
+
+def test_switch_state_is_unknown_without_status() -> None:
+    """No status must not be reported as off."""
+    assert payload.is_charge_enabled({}) is None
+
+
+def test_waiting_state_is_a_declared_sensor_option() -> None:
+    """An enum sensor rejects values missing from its options."""
+    spec = next(
+        s for s in catalog.EVSE_SENSOR_CATALOG if s.key == "evse_status"
+    )
+    assert spec.options is not None
+    assert "waiting_for_ev" in spec.options
+    assert spec.value_fn(_waiting_payload()) == "waiting_for_ev"
 
 
 def _main() -> int:

@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -46,6 +47,17 @@ SESSION_MISSING_RETRY_INTERVAL = 3600  # seconds
 # The charger record holds configuration and slow-moving readings,
 # so it does not need the live metric cadence.
 EVSE_FETCH_INTERVAL = 120  # seconds
+
+# A charger does not change state the instant a command is accepted.
+# Starting passes through waiting-for-EV before charging, and pausing
+# takes its own time to register. A single refresh straight after the
+# command reads the old state and leaves the UI stale until the next
+# ordinary poll, up to DEFAULT_POLL_INTERVAL later.
+#
+# These offsets re-read the charger over the following half minute so
+# the entities follow the transition. They are scheduled rather than
+# awaited, so a service call still returns promptly.
+SETTLE_REFRESH_DELAYS = (3, 8, 15, 30)
 
 
 class DazeDataUpdateCoordinator(
@@ -130,6 +142,29 @@ class DazeDataUpdateCoordinator(
     def network_uid(self) -> str:
         """Return the network UID."""
         return self._network_uid
+
+    def async_schedule_settle_refresh(self) -> None:
+        """Re-read the charger a few times after a command.
+
+        Commands take effect asynchronously: the charger moves through
+        intermediate states for several seconds. Refreshing once
+        immediately captures the state before the change, so schedule
+        further reads across the transition.
+
+        Scheduled, not awaited: the caller returns immediately.
+        """
+        for delay in SETTLE_REFRESH_DELAYS:
+
+            async def _refresh(_now: Any, _delay: int = delay) -> None:
+                """Ask the coordinator to re-read the charger."""
+                _LOGGER.debug(
+                    "Settle refresh for %s at +%ss",
+                    self._serial_number,
+                    _delay,
+                )
+                await self.async_request_refresh()
+
+            async_call_later(self.hass, delay, _refresh)
 
     async def _async_update_data(self) -> DazeCoordinatorData:
         """Fetch the latest socket remote info and session data.

@@ -116,6 +116,7 @@ class DazeWallboxNumberEntity(
                 self._serial_number, int_value
             )
             await self.coordinator.async_request_refresh()
+            self.coordinator.async_schedule_settle_refresh()
         except ApiAuthError as err:
             _LOGGER.warning(
                 "Auth error setting max current on %s: %s",

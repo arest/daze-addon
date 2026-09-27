@@ -145,6 +145,7 @@ class DazeWallboxSelectEntity(
                 self._serial_number, eco_value
             )
             await self.coordinator.async_request_refresh()
+            self.coordinator.async_schedule_settle_refresh()
         except ApiAuthError as err:
             _LOGGER.warning(
                 "Auth error setting operation mode on %s: %s",

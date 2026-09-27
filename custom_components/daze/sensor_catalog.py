@@ -32,7 +32,8 @@ EVSE_STATUS_MAP: dict[str, str] = {
     "paused": "paused",
     "error": "error",
     "offline": "offline",
-    "waiting_for_car": "idle",
+    "waiting_for_ev": "waiting_for_ev",
+    "waiting_for_car": "waiting_for_ev",
     "waiting_for_charge": "idle",
     "play_charge": "charging",
     "pause_charge": "paused",
@@ -148,7 +149,14 @@ EVSE_SENSOR_CATALOG: tuple[EVSESensorSpec, ...] = (
     EVSESensorSpec(
         key="evse_status",
         device_class="enum",
-        options=("idle", "charging", "paused", "error", "offline"),
+        options=(
+            "idle",
+            "waiting_for_ev",
+            "charging",
+            "paused",
+            "error",
+            "offline",
+        ),
         value_fn=get_evse_status,
     ),
     EVSESensorSpec(
