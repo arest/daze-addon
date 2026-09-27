@@ -43,24 +43,54 @@ CLIENT_ID = "4m0rp7oqarbrc3hn67ivvonba8"
 REDIRECT_URI = "https://webportal.dazeservice.com/authentication/callback"
 GET_USER_TARGET = "AWSCognitoIdentityProviderService.GetUser"
 
-# 6 A to 32 A. Wide steps first: the point is to find the boundary, not
-# to map every value.
-LADDER = (6000, 8000, 10000, 11739, 12000, 14000, 16000, 20000, 24000, 32000)
+# The floor is not 6 A. A charger rated 1.5 kW minimum at 230 V will
+# not accept less than about 6520 mA, and 6000 was rejected as out of
+# range. The ladder therefore starts just below the observed floor to
+# confirm where it sits, and reaches the 7.4 kW rating at the top.
+LADDER = (
+    6000,   # expected to fail: below a 1.5 kW floor
+    6400,
+    6521,   # 1500 W at 230 V
+    7000,
+    8000,
+    10000,
+    13000,
+    16000,
+    20000,
+    26000,
+    32000,  # 7360 W at 230 V, near the 7.4 kW rating
+)
 
 TIMEOUT = 30
 
 
-def _send(request: urllib.request.Request) -> tuple[int, object]:
-    """Send a request, tolerating HTTP error statuses."""
-    try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-            return response.status, _parse(
-                response.read().decode(errors="replace")
-            )
-    except urllib.error.HTTPError as err:
-        return err.code, _parse(err.read().decode(errors="replace"))
-    except urllib.error.URLError as err:
-        return 0, {"_error": str(err.reason)}
+def _send(
+    request: urllib.request.Request, attempts: int = 3
+) -> tuple[int, object]:
+    """Send a request, tolerating HTTP errors and network timeouts.
+
+    The Daze API stalls occasionally. A timeout crashed the first
+    version of this script mid-ladder, which is the one place a crash
+    is expensive: the original setting may not have been restored yet.
+    """
+    last: tuple[int, object] = (0, {"_error": "not attempted"})
+
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                return response.status, _parse(
+                    response.read().decode(errors="replace")
+                )
+        except urllib.error.HTTPError as err:
+            return err.code, _parse(err.read().decode(errors="replace"))
+        except (urllib.error.URLError, TimeoutError, OSError) as err:
+            reason = getattr(err, "reason", err)
+            last = (0, {"_error": str(reason)})
+            if attempt < attempts:
+                print(f"      network problem ({reason}), retrying")
+                time.sleep(3)
+
+    return last
 
 
 def _parse(raw: str) -> object:
@@ -203,7 +233,13 @@ def describe(status: int, body: object) -> str:
 
 def main() -> int:
     """Walk the ladder and report the accepted range."""
-    assume_yes = "--yes" in sys.argv[1:]
+    argv = sys.argv[1:]
+    assume_yes = "--yes" in argv
+
+    ladder = LADDER
+    if "--values" in argv:
+        raw = argv[argv.index("--values") + 1]
+        ladder = tuple(int(v) for v in raw.split(",") if v.strip())
 
     print("Daze charging current range probe")
     print()
@@ -245,23 +281,33 @@ def main() -> int:
         print("restored afterwards. Refusing to change anything.")
         return 1
 
-    print(f"\nWill try {len(LADDER)} values: "
-          f"{', '.join(str(v) for v in LADDER)} mA")
+    print(f"\nWill try {len(ladder)} values: "
+          f"{', '.join(str(v) for v in ladder)} mA")
     print(f"Then restore {original} mA.")
 
     if not assume_yes:
         if input("\nProceed? [yes/no] ").strip().lower() != "yes":
             return 0
 
+    # Used only to annotate the output with the implied power.
+    voltage = 230
+    session = record.get("sockets")
+    if isinstance(session, list) and session and isinstance(session[0], dict):
+        reading = session[0].get("lastACVoltageL1")
+        if isinstance(reading, (int, float)) and reading > 100:
+            voltage = int(reading)
+    print(f"\nUsing {voltage} V to show implied power.")
+
     accepted: list[int] = []
     rejected: list[tuple[int, str]] = []
 
     try:
-        for value in LADDER:
+        for value in ladder:
             status, body = set_current(token, serial, value)
             line = describe(status, body)
             verdict = "OK  " if 200 <= status < 300 else "    "
-            print(f"  {verdict}{value:>6} mA  {line}")
+            watts = round(value * voltage / 1000)
+            print(f"  {verdict}{value:>6} mA  ({watts:>5} W)  {line}")
 
             if 200 <= status < 300:
                 accepted.append(value)
@@ -286,11 +332,13 @@ def main() -> int:
         for value, line in rejected:
             print(f"  {value:>6} mA  {line}")
 
-    if accepted and rejected:
-        boundary = max(accepted)
-        print(f"\nThe boundary sits just above {boundary} mA.")
-        print("If that is well below the installation rating, a grid")
-        print("power cap or dynamic power management is imposing it.")
+    if accepted:
+        low, high = min(accepted), max(accepted)
+        print(f"\nImplied power range: {round(low * voltage / 1000)} W "
+              f"to {round(high * voltage / 1000)} W at {voltage} V.")
+        print("If those land near the charger's kW rating, the limits")
+        print("are power based and the entity should bound itself the")
+        print("same way rather than by current.")
 
     return 0
 
