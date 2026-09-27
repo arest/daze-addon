@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -59,6 +60,9 @@ def _load_integration_modules() -> tuple[Any, Any]:
 
 auth, api = _load_integration_modules()
 
+# Keep the suite fast; the delay itself is not under test.
+api.COMMAND_RETRY_DELAY = 0.0
+
 
 # ------------------------------------------------------------------
 # Fake aiohttp session
@@ -79,8 +83,13 @@ class FakeResponse:
         return self._payload
 
     async def text(self) -> str:
-        """Return a textual body."""
-        return str(self._payload)
+        """Return the body as JSON text, as aiohttp does.
+
+        Returning str(dict) here would produce Python repr with single
+        quotes, which is not what the real client sees and would hide
+        parsing bugs in the error handling.
+        """
+        return json.dumps(self._payload)
 
     async def __aenter__(self) -> FakeResponse:
         return self
@@ -377,6 +386,100 @@ def test_commands_still_send_the_serial_without_a_session() -> None:
     asyncio.run(api_client.async_start_charge("SER1", None))
 
     assert session.calls[0]["json"] == {"evseSerialNumber": "SER1"}
+
+
+
+RPC_FAILURE = {
+    "message": "Error",
+    "errors": [{"code": 101, "message": "Server error while requesting rpc server side"}],
+}
+
+WRONG_SESSION = {
+    "message": "Invalid Data",
+    "errors": [{"code": 4121, "message": "ErrorWrongSessionID"}],
+}
+
+COMMAND_OK = {"message": "", "errors": []}
+
+
+def test_retry_budget_covers_observed_failure_rate() -> None:
+    """Around six attempts were needed in practice, so allow more."""
+    assert api.COMMAND_RETRY_ATTEMPTS >= 8
+
+
+def test_transient_rpc_failure_is_retried_until_it_works() -> None:
+    """Code 101 is intermittent; the command must not give up on it.
+
+    The vendor app needs several presses for the same reason. Reporting
+    an error after one attempt is what made start and stop look broken.
+    """
+    session = FakeSession(
+        [
+            FakeResponse(500, RPC_FAILURE),
+            FakeResponse(500, RPC_FAILURE),
+            FakeResponse(200, COMMAND_OK),
+        ]
+    )
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    result = asyncio.run(
+        api_client.async_start_charge("SER1", 42)
+    )
+
+    assert result == COMMAND_OK
+    assert len(session.calls) == 3
+    # Every attempt must send the same correct body.
+    for call in session.calls:
+        assert call["json"] == {"evseSerialNumber": "SER1", "sessionId": 42}
+
+
+def test_retry_gives_up_and_says_it_is_temporary() -> None:
+    """Exhausting the retries must not blame the car or the session."""
+    budget = api.COMMAND_RETRY_ATTEMPTS
+    session = FakeSession(
+        [FakeResponse(500, RPC_FAILURE) for _ in range(budget)]
+    )
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    try:
+        asyncio.run(api_client.async_start_charge("SER1", 42))
+    except api.ApiCommandRejectedError as err:
+        assert err.code == 101
+        assert "intermittent" in str(err)
+        assert len(session.calls) == budget
+    else:
+        raise AssertionError("expected ApiCommandRejectedError")
+
+
+def test_wrong_session_is_not_retried() -> None:
+    """4121 is deterministic. Retrying it only wastes time."""
+    session = FakeSession([FakeResponse(422, WRONG_SESSION)])
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    try:
+        asyncio.run(api_client.async_start_charge("SER1", None))
+    except api.ApiCommandRejectedError as err:
+        assert err.code == 4121
+        assert "no paused charging session" in str(err)
+        assert len(session.calls) == 1
+    else:
+        raise AssertionError("expected ApiCommandRejectedError")
+
+
+def test_stop_is_retried_the_same_way() -> None:
+    """Stop shows the same flakiness, so it gets the same treatment."""
+    session = FakeSession(
+        [FakeResponse(500, RPC_FAILURE), FakeResponse(200, COMMAND_OK)]
+    )
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    asyncio.run(api_client.async_stop_charge("SER1", 42))
+
+    assert len(session.calls) == 2
 
 
 def _main() -> int:

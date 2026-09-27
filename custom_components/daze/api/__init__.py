@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -19,6 +20,14 @@ from .auth import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# The command RPC fails intermittently and needs more attempts than
+# is comfortable: around six were observed before a start or stop
+# took effect. Eight tries 1.5s apart gives headroom over that while
+# keeping the worst case near fifteen seconds, which is tolerable
+# for a command that physically switches a charger.
+COMMAND_RETRY_ATTEMPTS = 8
+COMMAND_RETRY_DELAY = 1.5
+
 
 class ApiAuthError(Exception):
     """Raised when the API returns 401 after a token refresh attempt.
@@ -30,6 +39,11 @@ class ApiAuthError(Exception):
 
 class ApiError(Exception):
     """Raised for non-auth API errors (4xx, 5xx, network issues)."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        """Store the HTTP status alongside the message."""
+        super().__init__(message)
+        self.status = status
 
 
 class ApiCommandRejectedError(ApiError):
@@ -48,17 +62,20 @@ class ApiCommandRejectedError(ApiError):
 
 # Upstream error codes seen from the command endpoints, with what each
 # actually meant when observed.
+COMMAND_ERROR_CODE_RPC_FAILURE = 101
+COMMAND_ERROR_CODE_WRONG_SESSION = 4121
+
 COMMAND_ERROR_HINTS: dict[int, str] = {
     # Sent with no session ID, or naming a session that is not paused.
-    4121: (
+    COMMAND_ERROR_CODE_WRONG_SESSION: (
         "there is no paused charging session to resume"
     ),
-    # The request was accepted but the charger could not carry it out,
-    # observed when the charger was already running or idle rather than
-    # paused.
-    101: (
-        "the charger could not carry out the command, which usually "
-        "means it is not in a state where that command applies"
+    # The Daze service could not reach the wallbox over its own RPC
+    # link. Intermittent: the same command succeeds on a later attempt,
+    # which is why the vendor app needs several presses. Retried
+    # rather than reported.
+    COMMAND_ERROR_CODE_RPC_FAILURE: (
+        "the Daze service could not reach the wallbox"
     ),
 }
 
@@ -209,7 +226,8 @@ class DazeApiClient:
                     )
                     raise ApiError(
                         f"API {method} {url} failed with status "
-                        f"{response.status}: {body}"
+                        f"{response.status}: {body}",
+                        status=response.status,
                     )
 
                 return await response.json()
@@ -293,7 +311,8 @@ class DazeApiClient:
                     )
                     raise ApiError(
                         f"API {method} {url} failed with status "
-                        f"{response.status}: {body}"
+                        f"{response.status}: {body}",
+                        status=response.status,
                     )
 
                 return await response.json()
@@ -498,30 +517,93 @@ class DazeApiClient:
         return await self._request("POST", url, json=payload)
 
     async def _post_command(
-        self, url: str, payload: dict[str, Any]
+        self,
+        url: str,
+        payload: dict[str, Any],
+        attempts: int = COMMAND_RETRY_ATTEMPTS,
+        delay: float = COMMAND_RETRY_DELAY,
     ) -> dict[str, Any]:
-        """POST a charger command, explaining a refusal when it fails.
+        """POST a charger command, retrying transient RPC failures.
 
-        The command endpoints answer with a structured error list. A
-        generic ApiError loses that detail, so the caller cannot tell a
-        "nothing to resume" refusal from a real outage.
+        The Daze service relays commands to the wallbox over its own
+        RPC link, and that link fails intermittently with HTTP 500 and
+        error code 101. The same command succeeds on a later attempt:
+        roughly six were needed in observed cases. This is why the
+        vendor app appears to need several presses to start or stop a
+        charge, and why reporting an error after one attempt made the
+        integration look broken when it was not.
+
+        Only that failure is retried. A wrong-session rejection (4121)
+        is deterministic, so it is surfaced immediately.
+
+        Args:
+            url: The command endpoint.
+            payload: The JSON body.
+            attempts: Total tries, including the first.
+            delay: Seconds to wait between tries.
+
+        Returns:
+            The response from the first attempt that succeeds.
 
         Raises:
-            ApiCommandRejectedError: If the charger refused the command.
+            ApiCommandRejectedError: If the charger refused the command,
+                or if every attempt hit the transient failure.
 
         """
-        try:
-            return await self._request("POST", url, json=payload)
-        except ApiAuthError:
-            raise
-        except ApiError as err:
-            code, hint = _code_and_hint_from_error(err)
-            if hint:
-                raise ApiCommandRejectedError(
-                    f"The charger refused the command because {hint}.",
-                    code=code,
-                ) from err
-            raise
+        last_error: ApiError | None = None
+
+        for attempt_number in range(1, attempts + 1):
+            try:
+                result = await self._request("POST", url, json=payload)
+            except ApiAuthError:
+                raise
+            except ApiError as err:
+                last_error = err
+                code, hint = _code_and_hint_from_error(err)
+
+                retryable = code == COMMAND_ERROR_CODE_RPC_FAILURE or (
+                    code is None and (getattr(err, "status", None) or 0) >= 500
+                )
+
+                if not retryable:
+                    if hint:
+                        raise ApiCommandRejectedError(
+                            f"The charger refused the command because "
+                            f"{hint}.",
+                            code=code,
+                        ) from err
+                    raise
+
+                if attempt_number < attempts:
+                    _LOGGER.debug(
+                        "Transient RPC failure on attempt %d of %d, "
+                        "retrying in %.1fs",
+                        attempt_number,
+                        attempts,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+            else:
+                if attempt_number > 1:
+                    _LOGGER.info(
+                        "Command succeeded on attempt %d of %d",
+                        attempt_number,
+                        attempts,
+                    )
+                return result
+
+        code, _ = _code_and_hint_from_error(last_error or Exception())
+        _LOGGER.warning(
+            "Command still failing after %d attempts: %s",
+            attempts,
+            last_error,
+        )
+        raise ApiCommandRejectedError(
+            f"The Daze service could not reach the wallbox after "
+            f"{attempts} attempts. This is intermittent rather than a "
+            "fault; try again shortly.",
+            code=code,
+        ) from last_error
 
     async def async_start_charge(
         self, serial: str, session_id: int | None = None

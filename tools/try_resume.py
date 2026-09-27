@@ -325,6 +325,129 @@ def summarise(status: int, body: object) -> str:
     return f"HTTP {status}: {str(body)[:120]}"
 
 
+
+def verify_changed(
+    token: str,
+    serial: str,
+    baseline: dict,
+    attempts: int = 4,
+    delay: int = 3,
+) -> tuple[bool, dict]:
+    """Poll until the charger state differs from the baseline.
+
+    Direction agnostic: a start and a stop both show up as a change in
+    evseState or the pause flag, so the same check works for either.
+
+    Returns:
+        A tuple of (changed, last observed state).
+
+    """
+    base_state = baseline.get("evseState")
+    base_paused = baseline.get("isPaused")
+    state: dict = {}
+
+    for index in range(attempts):
+        time.sleep(delay)
+        state = read_state(token, serial)
+        session = state.get("chargeSession")
+        power = (
+            session.get("instantPowerAsWatt")
+            if isinstance(session, dict)
+            else None
+        )
+
+        print(
+            f"      +{(index + 1) * delay:>2}s  "
+            f"evseState={state.get('evseState')}  "
+            f"isPaused={state.get('isPaused')}  power={power} W"
+        )
+
+        if (
+            state.get("evseState") != base_state
+            or state.get("isPaused") != base_paused
+        ):
+            return True, state
+
+    return False, state
+
+
+def retry_mode(token: str, serial: str, state: dict) -> int:
+    """Send one command repeatedly until the charger state changes.
+
+    The command shape is already known to be correct. What is not known
+    is how many attempts the Daze RPC link needs before it takes. This
+    measures exactly that.
+    """
+    session = state.get("chargeSession")
+    session_id = session.get("sessionId") if isinstance(session, dict) else None
+    quoted = urllib.parse.quote(serial, safe="")
+
+    print("\nWhich direction do you want to test?")
+    print("  1  start / resume  (playcharge)")
+    print("  2  stop            (stopcharge)")
+    choice = input("Choice [1/2]: ").strip()
+
+    if choice == "2":
+        path = f"/sockets/{quoted}/commands/stopcharge"
+        label = "stop"
+    else:
+        path = f"/sockets/{quoted}/commands/playcharge"
+        label = "start"
+
+    body: dict = {"evseSerialNumber": serial}
+    if session_id is not None:
+        body["sessionId"] = session_id
+
+    max_attempts = input("How many attempts at most? [8]: ").strip()
+    attempts = int(max_attempts) if max_attempts.isdigit() else 8
+
+    gap = input("Seconds between attempts? [2]: ").strip()
+    gap_seconds = int(gap) if gap.isdigit() else 2
+
+    print(f"\nWill send this up to {attempts} time(s), {gap_seconds}s apart:")
+    print(f"  POST {API_BASE_URL}{path}")
+    print(f"  body {json.dumps(body)}")
+    print(f"\nBaseline: evseState={state.get('evseState')} "
+          f"isPaused={state.get('isPaused')}")
+
+    if input("\nProceed? [yes/no] ").strip().lower() != "yes":
+        return 0
+
+    statuses: list[str] = []
+
+    for number in range(1, attempts + 1):
+        print(f"\n  Attempt {number} of {attempts}")
+        status, response = attempt(token, path, body)
+        print(f"    -> {summarise(status, response)}")
+        statuses.append(str(status))
+
+        if 200 <= status < 300:
+            print("    accepted; watching for a state change:")
+            changed, after = verify_changed(token, serial, state)
+            if changed:
+                print("\n" + "=" * 60)
+                print(f"WORKED on attempt {number} of {attempts}.")
+                print(f"  status sequence: {', '.join(statuses)}")
+                print(f"  final: evseState={after.get('evseState')} "
+                      f"isPaused={after.get('isPaused')}")
+                print(f"\nThe {label} command is correct. It needed "
+                      f"{number} attempt(s), which is what the retry in "
+                      "the integration is sized for.")
+                return 0
+            print("    accepted but nothing changed; treating as a miss")
+
+        if number < attempts:
+            time.sleep(gap_seconds)
+
+    print("\n" + "=" * 60)
+    print(f"No attempt produced a state change after {attempts} tries.")
+    print(f"  status sequence: {', '.join(statuses)}")
+    print("\nIf these were all 500s, the RPC link is down rather than")
+    print("flaky. If they were 200s with no change, the command is")
+    print("accepted but not applicable from this state.")
+    return 1
+
+
 def main() -> int:
     """Try each resume variant with per-attempt confirmation."""
     print("Daze resume-command finder")
@@ -358,6 +481,12 @@ def main() -> int:
     print(f"isPaused  : {state.get('isPaused')}")
     print(f"suspension: {state.get('evseSuspensionReason')}")
     print(f"sessionId : {session_id}")
+
+    print("\nWhat do you want to do?")
+    print("  1  retry one known command until it works (measures flakiness)")
+    print("  2  search for a working command variant")
+    if input("Choice [1/2]: ").strip() != "2":
+        return retry_mode(token, serial, state)
 
     paused = bool(state.get("isPaused"))
 
