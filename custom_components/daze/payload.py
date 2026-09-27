@@ -225,32 +225,36 @@ def resolve_optimistic(
     return optimistic, True
 
 
-# The charging current the charger will accept is not the installation
-# rating. A single-phase unit behind a 3000 W grid cap reported a
-# 32000 mA installation limit but rejected anything above 11739 mA with
-# MaxExternalChargingCurrentOutOfRange.
+# The charging current ceiling comes from the installation rating.
 #
-# These fields have all been observed carrying a usable ceiling, in
-# decreasing order of specificity.
-CURRENT_LIMIT_FIELDS = (
-    "sccLimit",
-    "lastMaxInstallationCurrent",
-)
+# sccLimit was tried first and is wrong: on a live charger it read
+# 11739, identical to both maxExternalChargingCurrentInMilliAmps and
+# lastMaxChargingCurrent, which are the current setting. Capping the
+# slider at it would pin the slider to wherever it already sat.
+#
+# lastMaxInstallationCurrent is the rating of the installation, which
+# is what bounds the hardware: a unit rated 1.5 to 7.4 kW single phase
+# is 6.5 to 32 A, matching a reported 32000.
+CURRENT_LIMIT_FIELDS = ("lastMaxInstallationCurrent",)
 
 # Industry minimum for EVSE charging current.
 MIN_CHARGING_CURRENT_MA = 6000
 
-# Fallback ceiling when the charger reports nothing usable: 32 A, the
-# maximum the hardware line supports.
+# Fallback ceiling when the charger reports nothing usable.
 FALLBACK_MAX_CHARGING_CURRENT_MA = 32000
 
 
 def max_charging_current(data: dict[str, Any] | None) -> int:
-    """Return the highest charging current the charger will accept.
+    """Return the highest charging current the entity should offer.
 
-    Advertising the installation rating makes the slider offer values
-    the charger rejects, which surfaces as an opaque 422. Prefer the
-    limit the charger itself reports.
+    Uses the installation rating rather than a hardcoded 32 A, so a
+    16 A installation is bounded correctly.
+
+    This is not a promise the charger will accept the value. A grid
+    power cap or dynamic power management can reject a current that is
+    within the installation rating, which the API reports as
+    MaxExternalChargingCurrentOutOfRange. That limit is not exposed as
+    a field, so it cannot be applied here in advance.
 
     Args:
         data: The merged payload, or None before the first poll.
