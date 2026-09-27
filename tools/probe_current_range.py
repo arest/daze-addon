@@ -285,9 +285,10 @@ def main() -> int:
           f"{', '.join(str(v) for v in ladder)} mA")
     print(f"Then restore {original} mA.")
 
-    if not assume_yes:
-        if input("\nProceed? [yes/no] ").strip().lower() != "yes":
-            return 0
+    if not assume_yes and (
+        input("\nProceed? [yes/no] ").strip().lower() != "yes"
+    ):
+        return 0
 
     # Used only to annotate the output with the implied power.
     voltage = 230
