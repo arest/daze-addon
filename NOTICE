@@ -17,10 +17,14 @@ This repository
 A fork maintained by Pedro Tarrinho (@tarrinho) at
 https://github.com/tarrinho/daze-addon
 
-It contains bug fixes found while running the integration against a
-DT01 charger. It is not a redesign, and it carries no claim over the
-original work. See the Credits section of README.md for the specific
-changes.
+The changes in this fork are the work of Pedro Tarrinho. They are bug
+fixes found by running the integration against a DT01 charger and
+measuring the API's actual responses: authentication, payload parsing,
+charge command shape and retry behaviour, state reporting, and
+diagnostics.
+
+It is not a redesign, and it carries no claim over the original work.
+See the "Changes in this fork" section of README.md for the detail.
 
 Licence
 -------

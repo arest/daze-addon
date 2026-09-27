@@ -9,7 +9,7 @@ Home Assistant integration for **Daze WallBox EV chargers**. Monitor charging me
 
 Daze wallboxes are managed through the [Daze web portal](https://webportal.dazeservice.com). This integration bridges the gap, bringing your wallbox into Home Assistant alongside all your other smart home devices.
 
-> **This is a fork.** The original integration was created by **Andrea Restello** ([@arest](https://github.com/arest)) at [arest/daze-addon](https://github.com/arest/daze-addon), and all of the original design and implementation is his work. This fork adds fixes found while running it against a DT01 charger — see [Credits](#credits).
+> **This is a fork.** The original integration was created by **Andrea Restello** ([@arest](https://github.com/arest)) at [arest/daze-addon](https://github.com/arest/daze-addon), and all of the original design and implementation is his work. This fork, maintained by **Pedro Tarrinho** ([@tarrinho](https://github.com/tarrinho)), adds fixes found while running it against a DT01 charger — see [Changes in this fork](#changes-in-this-fork).
 
 ---
 
@@ -87,7 +87,7 @@ If your tokens expire, the integration will automatically prompt you to re-enter
 | `sensor.daze_ac_voltage_l3` | AC Voltage L3 | `voltage` | `measurement` | V |
 | `sensor.daze_board_temperature` | Board Temperature | `temperature` | `measurement` | °C |
 | `sensor.daze_case_temperature` | Case Temperature | `temperature` | `measurement` | °C |
-| `sensor.daze_evse_status` | EVSE Status | `enum` | — | idle / charging / paused / error |
+| `sensor.daze_evse_status` | EVSE Status | `enum` | — | idle / waiting_for_ev / charging / paused / error / offline |
 | `sensor.daze_last_session_energy` | Last Session Energy | `energy` | `total_increasing` | Wh |
 | `sensor.daze_last_session_duration` | Last Session Duration | — | — | min |
 | `sensor.daze_last_session_cost` | Last Session Cost | `monetary` | — | EUR |
@@ -247,19 +247,61 @@ written upstream. He also reverse-engineered the Daze web API, which is not
 publicly documented — that is the hard part, and none of what follows would
 exist without it.
 
-This fork adds fixes found while running the integration against a DT01
-charger:
+### Changes in this fork
 
-- Authenticate through Cognito `GetUser` rather than `/oauth2/userInfo`, which
-  rejects the token scope the Daze portal issues
-- Read the live metrics from where the API actually returns them, nested under
-  `chargeSession`, and pull temperatures and the grid limit from the EVSE record
-- Send the serial and session ID with the charge commands, and retry them
-  through the intermittent Daze RPC link
-- Report the waiting-for-vehicle state, and follow state changes after a command
+Maintained by **Pedro Tarrinho** ([@tarrinho](https://github.com/tarrinho)).
 
-These are bug fixes to someone else's design, not a redesign. Where the
-upstream project takes them, this fork becomes unnecessary.
+Every change below was found by running the integration against a real DT01
+wallbox and measuring the API's actual responses, rather than by reading the
+code alone.
+
+**Setup**
+
+- Authenticate through the Cognito `GetUser` operation instead of
+  `/oauth2/userInfo`. The Daze portal issues access tokens scoped
+  `aws.cognito.signin.user.admin` without `openid`, which `userInfo` rejects,
+  so setup previously failed for every user with `invalid_token`.
+
+**Reading data**
+
+- Read the live metrics from where the API actually returns them. Power,
+  energy, currents and voltages arrive nested under `chargeSession`, not at the
+  top level, so every sensor read `Unknown` with no error logged.
+- Fetch the EVSE record as well as the socket state. Temperatures, the grid
+  limit, eco mode and the configured current appear only there.
+- Derive the charger status from the integer `evseState` plus the pause and
+  error flags. The API never returns the status string the code expected.
+- Report `waiting_for_ev`, the state the charger passes through after a start
+  before the car begins drawing, and hold the charge switch on through it so it
+  does not appear to snap back.
+
+**Charge control**
+
+- Send the serial number and the session ID with `playcharge` and `stopcharge`.
+  An empty body is rejected with `ErrorWrongSessionID`, and the session ID alone
+  is accepted but does nothing.
+- Read the session ID from the charger at command time. It changes whenever a
+  session ends, so a cached copy can name one that has already closed.
+- Retry commands through the Daze RPC link, which fails intermittently with
+  HTTP 500 code 101. Delays grow from 1.5s to 6s across eight attempts, roughly
+  33 seconds in total, because a tight burst of retries does not outlast the
+  outage.
+- Re-read the charger at 3, 8, 15 and 30 seconds after a command, so a start or
+  pause shows up promptly instead of waiting for the next poll.
+
+**Robustness and diagnostics**
+
+- Treat HTTP 404 from the recharge-session endpoint as a durable condition.
+  It was retried every 30 seconds and logged a warning each time.
+- Throttle the session history fetch to once every five minutes instead of
+  requesting up to 1000 records twice a minute.
+- Log retried failures at debug and report a single warning only when a command
+  genuinely gives up, instead of one warning per attempt.
+- Add diagnostic tools under `tools/` for reproducing each API call outside
+  Home Assistant, and tests that use captured API responses as fixtures.
+
+These are bug fixes to someone else's design, not a redesign. If the upstream
+project adopts them, this fork becomes unnecessary.
 
 ### License
 
