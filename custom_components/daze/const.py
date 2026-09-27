@@ -6,6 +6,18 @@ DOMAIN = "daze"
 API_BASE_URL = "https://webapi.dazeservice.com/v3"
 COGNITO_BASE_URL = "https://daze.auth.eu-central-1.amazoncognito.com"
 
+# Cognito user pool API, used to read the signed-in user's profile.
+#
+# The hosted-UI endpoint COGNITO_BASE_URL/oauth2/userInfo cannot be used:
+# it requires the access token to carry the "openid" scope, and the Daze
+# web portal issues access tokens scoped "aws.cognito.signin.user.admin"
+# only. Those tokens are valid, but userInfo rejects every one of them
+# with "Access token does not contain the 'openid' scope". The GetUser
+# operation below accepts that scope and returns the same attributes.
+COGNITO_IDP_URL = "https://cognito-idp.eu-central-1.amazonaws.com/"
+GET_USER_TARGET = "AWSCognitoIdentityProviderService.GetUser"
+GET_USER_CONTENT_TYPE = "application/x-amz-json-1.1"
+
 # Cognito OAuth settings
 CLIENT_ID = "4m0rp7oqarbrc3hn67ivvonba8"
 REDIRECT_URI = "https://webportal.dazeservice.com/authentication/callback"

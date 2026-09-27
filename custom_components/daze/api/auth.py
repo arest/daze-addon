@@ -12,7 +12,10 @@ from aiohttp.client_exceptions import ClientError
 from ..const import (
     CLIENT_ID,
     COGNITO_BASE_URL,
+    COGNITO_IDP_URL,
     DEFAULT_TOKEN_EXPIRY_BUFFER,
+    GET_USER_CONTENT_TYPE,
+    GET_USER_TARGET,
     REDIRECT_URI,
 )
 
@@ -21,6 +24,79 @@ _LOGGER = logging.getLogger(__name__)
 
 class AuthError(Exception):
     """Raised when authentication fails (invalid/expired tokens, network error)."""
+
+
+async def async_fetch_user(
+    session: ClientSession, access_token: str
+) -> tuple[int, dict[str, Any]]:
+    """Call the Cognito user pool GetUser operation.
+
+    This replaces the hosted-UI ``/oauth2/userInfo`` endpoint, which
+    requires the ``openid`` scope. The Daze web portal issues access
+    tokens scoped ``aws.cognito.signin.user.admin`` without ``openid``,
+    so userInfo rejects every token a user can obtain. GetUser accepts
+    that scope and returns the same profile attributes.
+
+    Two differences from userInfo matter to callers:
+
+    - The access token is sent in the request body, not in an
+      ``Authorization`` header.
+    - An invalid or expired token yields HTTP 400 with a
+      ``NotAuthorizedException`` type, not HTTP 401.
+
+    Args:
+        session: An aiohttp ClientSession to use for the request.
+        access_token: The Cognito access token to authenticate with.
+
+    Returns:
+        A tuple of the HTTP status code and the parsed JSON body. The
+        body is an empty dict if the response was not valid JSON.
+
+    Raises:
+        AuthError: If the request fails at the network level.
+
+    """
+    headers = {
+        "Content-Type": GET_USER_CONTENT_TYPE,
+        "X-Amz-Target": GET_USER_TARGET,
+    }
+
+    try:
+        async with session.post(
+            COGNITO_IDP_URL,
+            headers=headers,
+            json={"AccessToken": access_token},
+        ) as response:
+            # Cognito replies with application/x-amz-json-1.1, which
+            # aiohttp refuses to decode unless content_type is relaxed.
+            try:
+                body = await response.json(content_type=None)
+            except (ValueError, TypeError):
+                body = {}
+
+            if not isinstance(body, dict):
+                body = {}
+
+            return response.status, body
+
+    except ClientError as err:
+        _LOGGER.warning("Network error during GetUser: %s", err)
+        raise AuthError(f"Network error during GetUser: {err}") from err
+
+
+def describe_get_user_error(status: int, body: dict[str, Any]) -> str:
+    """Summarise a failed GetUser response without leaking the body.
+
+    Args:
+        status: The HTTP status code returned by Cognito.
+        body: The parsed JSON body.
+
+    Returns:
+        A short, safe description for logs and error messages.
+
+    """
+    error_type = body.get("__type") or "unknown error"
+    return f"HTTP {status}: {error_type}"
 
 
 class DazeAuthClient:
@@ -152,7 +228,7 @@ class DazeAuthClient:
     async def async_validate_tokens(
         self, session: ClientSession
     ) -> bool:
-        """Validate the stored access token against Cognito userInfo.
+        """Validate the stored access token against Cognito GetUser.
 
         Args:
             session: An aiohttp ClientSession to use for the request.
@@ -164,36 +240,21 @@ class DazeAuthClient:
             AuthError: If the token is invalid or a network error occurs.
 
         """
-        url = f"{COGNITO_BASE_URL}/oauth2/userInfo"
-        headers = self.get_headers()
+        _LOGGER.debug("Validating tokens via Cognito GetUser")
 
-        _LOGGER.debug("Validating tokens via Cognito userInfo")
+        status, body = await async_fetch_user(session, self._access_token)
 
-        try:
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    return True
+        if status == 200:
+            return True
 
-                body = await response.text()
-                _LOGGER.warning(
-                    "Token validation failed (HTTP %s): %s",
-                    response.status,
-                    body,
-                )
-                raise AuthError(
-                    f"Token validation failed with status {response.status}: "
-                    f"{body}"
-                )
+        detail = describe_get_user_error(status, body)
+        _LOGGER.warning("Token validation failed (%s)", detail)
+        raise AuthError(f"Token validation failed, {detail}")
 
-        except AuthError:
-            raise
-        except ClientError as err:
-            _LOGGER.warning(
-                "Network error during token validation: %s", err
-            )
-            raise AuthError(
-                f"Network error during token validation: {err}"
-            ) from err
+    @property
+    def access_token(self) -> str:
+        """Return the current access token."""
+        return self._access_token
 
     @property
     def token_expiry(self) -> float | None:

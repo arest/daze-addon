@@ -9,7 +9,12 @@ from aiohttp import ClientSession
 from aiohttp.client_exceptions import ClientError
 
 from ..const import API_BASE_URL
-from .auth import AuthError, DazeAuthClient
+from .auth import (
+    AuthError,
+    DazeAuthClient,
+    async_fetch_user,
+    describe_get_user_error,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,6 +29,33 @@ class ApiAuthError(Exception):
 
 class ApiError(Exception):
     """Raised for non-auth API errors (4xx, 5xx, network issues)."""
+
+
+def _flatten_user_attributes(payload: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a Cognito GetUser response into a plain attribute dict.
+
+    GetUser returns attributes as a list of ``{"Name": ..., "Value": ...}``
+    entries. Callers expect a mapping, so convert it and carry the
+    username across as well.
+
+    Args:
+        payload: The parsed GetUser response body.
+
+    Returns:
+        A dict mapping attribute names to values.
+
+    """
+    attributes: dict[str, Any] = {
+        attr["Name"]: attr.get("Value")
+        for attr in payload.get("UserAttributes", [])
+        if isinstance(attr, dict) and attr.get("Name")
+    }
+
+    username = payload.get("Username")
+    if username:
+        attributes.setdefault("username", username)
+
+    return attributes
 
 
 class DazeApiClient:
@@ -211,14 +243,58 @@ class DazeApiClient:
     # ------------------------------------------------------------------
 
     async def async_get_user_info(self) -> dict[str, Any]:
-        """Fetch user info from the Cognito userInfo endpoint.
+        """Fetch the signed-in user's profile from Cognito.
 
-        GET /oauth2/userInfo
+        Uses the user pool GetUser operation rather than the hosted-UI
+        userInfo endpoint, which rejects the scope Daze issues. See
+        ``async_fetch_user`` for the details.
+
+        The GetUser attribute list is flattened into a plain dict so
+        callers can read ``email`` directly, matching the shape the
+        previous userInfo call returned.
+
+        Because GetUser signals an invalid token with HTTP 400 rather
+        than HTTP 401, the generic ``_request`` retry path does not
+        apply; the refresh-and-retry is handled explicitly here.
+
+        Returns:
+            A dict of user attributes, including ``email``.
+
+        Raises:
+            ApiAuthError: If the token is rejected and refreshing it
+                does not recover access.
+
         """
-        url = (
-            "https://daze.auth.eu-central-1.amazoncognito.com/oauth2/userInfo"
+        status, body = await async_fetch_user(
+            self._session, self._auth.access_token
         )
-        return await self._request("GET", url)
+
+        if status != 200:
+            _LOGGER.info(
+                "GetUser rejected the access token (%s) — refreshing",
+                describe_get_user_error(status, body),
+            )
+
+            try:
+                await self._auth.async_refresh_access_token(self._session)
+            except AuthError as err:
+                raise ApiAuthError(
+                    "Token refresh failed, re-authentication required"
+                ) from err
+
+            status, body = await async_fetch_user(
+                self._session, self._auth.access_token
+            )
+
+            if status != 200:
+                detail = describe_get_user_error(status, body)
+                _LOGGER.warning("GetUser failed after refresh (%s)", detail)
+                raise ApiAuthError(
+                    "Authentication failed after token refresh, "
+                    "re-authentication required"
+                )
+
+        return _flatten_user_attributes(body)
 
     async def async_get_networks(
         self, email: str
