@@ -453,6 +453,55 @@ def test_guess_survives_a_missing_reading() -> None:
     assert keep is True
 
 
+
+# ------------------------------------------------------------------
+# Charging current ceiling
+# ------------------------------------------------------------------
+
+
+def test_ceiling_comes_from_the_charger_not_the_installation() -> None:
+    """The slider must not offer values the charger rejects.
+
+    A single-phase unit behind a 3000 W grid cap reports a 32 A
+    installation rating but refuses anything above 11739 mA with
+    MaxExternalChargingCurrentOutOfRange.
+    """
+    data = payload.merge_payload(
+        REMOTE_INFO,
+        {**EVSE_RECORD, "sccLimit": 11739, "lastMaxInstallationCurrent": 32000},
+    )
+    assert payload.max_charging_current(data) == 11739
+
+
+def test_ceiling_falls_back_to_the_installation_rating() -> None:
+    """Without a reported limit, the installation rating is the best
+    available answer."""
+    assert (
+        payload.max_charging_current({"lastMaxInstallationCurrent": 32000})
+        == 32000
+    )
+
+
+def test_ceiling_has_a_default_before_the_first_poll() -> None:
+    """The entity is built before any data arrives."""
+    assert payload.max_charging_current(None) == 32000
+    assert payload.max_charging_current({}) == 32000
+
+
+def test_ceiling_never_drops_below_the_industry_minimum() -> None:
+    """A nonsensical limit must not make the entity unusable."""
+    assert payload.max_charging_current({"sccLimit": 100}) == 6000
+
+
+def test_ceiling_ignores_non_numeric_and_zero_values() -> None:
+    """Zero appears in unset fields and must not win."""
+    data = {"sccLimit": 0, "lastMaxInstallationCurrent": 32000}
+    assert payload.max_charging_current(data) == 32000
+
+    data = {"sccLimit": None, "lastMaxInstallationCurrent": 16000}
+    assert payload.max_charging_current(data) == 16000
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

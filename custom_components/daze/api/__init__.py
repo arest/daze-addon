@@ -71,6 +71,7 @@ class ApiCommandRejectedError(ApiError):
 # actually meant when observed.
 COMMAND_ERROR_CODE_RPC_FAILURE = 101
 COMMAND_ERROR_CODE_WRONG_SESSION = 4121
+COMMAND_ERROR_CODE_CURRENT_OUT_OF_RANGE = 369
 
 COMMAND_ERROR_HINTS: dict[int, str] = {
     # Sent with no session ID, or naming a session that is not paused.
@@ -83,6 +84,14 @@ COMMAND_ERROR_HINTS: dict[int, str] = {
     # rather than reported.
     COMMAND_ERROR_CODE_RPC_FAILURE: (
         "the Daze service could not reach the wallbox"
+    ),
+    # Despite mentioning the RPC server, this is a validation failure
+    # and retrying it changes nothing. The charger accepts far less
+    # than the installation rating when a grid power cap applies.
+    COMMAND_ERROR_CODE_CURRENT_OUT_OF_RANGE: (
+        "the requested charging current is outside the range this "
+        "charger accepts, which is lower than the installation rating "
+        "when a grid power limit applies"
     ),
 }
 
@@ -518,7 +527,7 @@ class DazeApiClient:
             "evseSerialNumber": serial,
             "maxExternalChargingCurrentInMilliAmps": current_ma,
         }
-        return await self._request("POST", url, json=payload)
+        return await self._post_command(url, payload)
 
     async def async_set_eco_mode(
         self, serial: str, eco_mode_enabled: bool
@@ -543,7 +552,7 @@ class DazeApiClient:
             "evseSerialNumber": serial,
             "ecoModeEnabled": eco_mode_enabled,
         }
-        return await self._request("POST", url, json=payload)
+        return await self._post_command(url, payload)
 
     async def _post_command(
         self,

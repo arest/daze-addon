@@ -19,9 +19,10 @@ from homeassistant.const import EntityCategory, UnitOfElectricCurrent
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import ApiAuthError, ApiError
+from .api import ApiAuthError, ApiCommandRejectedError, ApiError
 from .const import DOMAIN
 from .coordinator import DazeDataUpdateCoordinator
+from .payload import max_charging_current
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -30,9 +31,11 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Industry-standard range for EVSE charging current limits
+# Industry minimum for EVSE charging current. The maximum is not a
+# constant: it depends on the installation and on any grid power cap,
+# so it is read from the charger. See max_charging_current.
 NATIVE_MIN_VALUE = 6000  # 6 A
-NATIVE_MAX_VALUE = 32000  # 32 A
+NATIVE_MAX_VALUE = 32000  # 32 A, used only until the charger reports
 NATIVE_STEP = 100  # 0.1 A increments
 
 
@@ -44,7 +47,6 @@ class DazeWallboxNumberEntity(
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.CONFIG
     _attr_native_min_value = NATIVE_MIN_VALUE
-    _attr_native_max_value = NATIVE_MAX_VALUE
     _attr_native_step = NATIVE_STEP
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.MILLIAMPERE
 
@@ -69,6 +71,18 @@ class DazeWallboxNumberEntity(
         self._serial_number = serial_number
         self._attr_unique_id = f"{serial_number}_max_charging_current"
         self._attr_device_info = device_info
+
+    @property
+    def native_max_value(self) -> float:
+        """Return the highest current the charger will accept.
+
+        Advertising the installation rating offers values the charger
+        rejects with MaxExternalChargingCurrentOutOfRange. A grid power
+        cap can put the real ceiling well below it: a single-phase unit
+        behind a 3000 W cap reported a 32 A installation limit but
+        refused anything above 11.7 A.
+        """
+        return float(max_charging_current(self.coordinator.data))
 
     @property
     def native_value(self) -> int | None:
@@ -126,6 +140,16 @@ class DazeWallboxNumberEntity(
             self._notify_error(
                 "Authentication failed when trying to set the charging "
                 "current. Please re-authenticate the integration."
+            )
+        except ApiCommandRejectedError as err:
+            _LOGGER.info(
+                "Charger refused the current change on %s: %s",
+                self._serial_number,
+                err,
+            )
+            self._notify_error(
+                f"{err} The highest value this charger currently "
+                f"accepts is {max_charging_current(self.coordinator.data)} mA."
             )
         except ApiError as err:
             _LOGGER.warning(

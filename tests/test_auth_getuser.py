@@ -669,6 +669,54 @@ def test_command_proceeds_when_the_session_read_fails() -> None:
     assert session.calls[-1]["json"] == {"evseSerialNumber": "SER1"}
 
 
+
+OUT_OF_RANGE = {
+    "message": "Invalid Data",
+    "errors": [
+        {
+            "code": 369,
+            "message": (
+                "Server error while requesting rpc server side. "
+                "Error MaxExternalChargingCurrentOutOfRange"
+            ),
+        }
+    ],
+}
+
+
+def test_out_of_range_current_is_explained_and_not_retried() -> None:
+    """369 mentions the RPC server but is a validation failure.
+
+    Retrying it changes nothing, and the stock message sent the user
+    looking in the wrong place.
+    """
+    session = FakeSession([FakeResponse(422, OUT_OF_RANGE)])
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    try:
+        asyncio.run(api_client.async_set_max_charging_current("SER1", 32000))
+    except api.ApiCommandRejectedError as err:
+        assert err.code == 369
+        assert "outside the range" in str(err)
+        assert len(session.calls) == 1
+    else:
+        raise AssertionError("expected ApiCommandRejectedError")
+
+
+def test_current_change_retries_a_transient_failure() -> None:
+    """Configuration writes share the command retry behaviour."""
+    session = FakeSession(
+        [FakeResponse(500, RPC_FAILURE), FakeResponse(200, COMMAND_OK)]
+    )
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    asyncio.run(api_client.async_set_max_charging_current("SER1", 10000))
+
+    assert len(session.calls) == 2
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

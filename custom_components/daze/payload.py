@@ -223,3 +223,52 @@ def resolve_optimistic(
         return actual, False
 
     return optimistic, True
+
+
+# The charging current the charger will accept is not the installation
+# rating. A single-phase unit behind a 3000 W grid cap reported a
+# 32000 mA installation limit but rejected anything above 11739 mA with
+# MaxExternalChargingCurrentOutOfRange.
+#
+# These fields have all been observed carrying a usable ceiling, in
+# decreasing order of specificity.
+CURRENT_LIMIT_FIELDS = (
+    "sccLimit",
+    "lastMaxInstallationCurrent",
+)
+
+# Industry minimum for EVSE charging current.
+MIN_CHARGING_CURRENT_MA = 6000
+
+# Fallback ceiling when the charger reports nothing usable: 32 A, the
+# maximum the hardware line supports.
+FALLBACK_MAX_CHARGING_CURRENT_MA = 32000
+
+
+def max_charging_current(data: dict[str, Any] | None) -> int:
+    """Return the highest charging current the charger will accept.
+
+    Advertising the installation rating makes the slider offer values
+    the charger rejects, which surfaces as an opaque 422. Prefer the
+    limit the charger itself reports.
+
+    Args:
+        data: The merged payload, or None before the first poll.
+
+    Returns:
+        A ceiling in milliamps, never below the industry minimum.
+
+    """
+    if not data:
+        return FALLBACK_MAX_CHARGING_CURRENT_MA
+
+    candidates = [
+        value
+        for field in CURRENT_LIMIT_FIELDS
+        if isinstance(value := data.get(field), (int, float)) and value > 0
+    ]
+
+    if not candidates:
+        return FALLBACK_MAX_CHARGING_CURRENT_MA
+
+    return max(int(min(candidates)), MIN_CHARGING_CURRENT_MA)
