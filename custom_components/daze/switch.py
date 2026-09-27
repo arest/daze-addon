@@ -63,6 +63,18 @@ class DazeWallboxSwitchEntity(
         self._attr_device_info = device_info
 
     @property
+    def _session_id(self) -> int | None:
+        """Return the current charge session ID, if one is open.
+
+        The play and stop commands act on a session and must name
+        it; without it the API answers 422 ErrorWrongSessionID.
+        """
+        if self.coordinator.data is None:
+            return None
+        session_id = self.coordinator.data.get("sessionId")
+        return session_id if isinstance(session_id, int) else None
+
+    @property
     def is_on(self) -> bool | None:
         """Return True if the wallbox is currently charging."""
         if self.coordinator.data is None:
@@ -85,7 +97,9 @@ class DazeWallboxSwitchEntity(
             _LOGGER.info(
                 "Starting charge on wallbox %s", self._serial_number
             )
-            await self._api_client.async_start_charge(self._serial_number)
+            await self._api_client.async_start_charge(
+                self._serial_number, self._session_id
+            )
             await self.coordinator.async_request_refresh()
         except ApiAuthError as err:
             _LOGGER.warning(
@@ -122,7 +136,9 @@ class DazeWallboxSwitchEntity(
             _LOGGER.info(
                 "Stopping charge on wallbox %s", self._serial_number
             )
-            await self._api_client.async_stop_charge(self._serial_number)
+            await self._api_client.async_stop_charge(
+                self._serial_number, self._session_id
+            )
             await self.coordinator.async_request_refresh()
         except ApiAuthError as err:
             _LOGGER.warning(

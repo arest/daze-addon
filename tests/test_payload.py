@@ -283,6 +283,84 @@ def test_switch_status_check_matches_derived_status() -> None:
     assert str(data.get("evseStatus")).lower() == "charging"
 
 
+
+# Captured while the charger was paused mid-session.
+REMOTE_INFO_PAUSED: dict[str, Any] = {
+    "active": True,
+    "chargeSession": {
+        "chargeTime": "00:05:19",
+        "currentlyChargingInThreePhase": False,
+        "deliveredEnergyAsWattHour": 223,
+        "instantPowerAsWatt": 0,
+        "lastACVoltageL1": 232,
+        "lastACVoltageL2": 1,
+        "lastACVoltageL3": 7,
+        "lastChargingCurrentInstantL1": 0,
+        "lastChargingCurrentInstantL2": 0,
+        "lastChargingCurrentInstantL3": 0,
+        "lastMaxChargingCurrent": 0,
+        "sessionId": 1790529768000,
+        "startTime": "2026-09-27T17:22:48Z",
+        "user": None,
+    },
+    "evseIsThreePhase": False,
+    "evseState": 6,
+    "evseSuspensionReason": 3,
+    "evseSystemError": 0,
+    "isPaused": True,
+    "isScheduledPaused": False,
+    "isSmartTariffPaused": False,
+    "nextScheduleInfo": None,
+    "smartTariffBatteryInfo": None,
+}
+
+
+def test_state_6_is_paused() -> None:
+    """Confirmed against hardware: state 6 with isPaused set."""
+    data = payload.merge_payload(REMOTE_INFO_PAUSED, EVSE_RECORD)
+    assert data["evseStatus"] == "paused"
+
+
+def test_paused_state_reports_paused_without_the_flag() -> None:
+    """State 6 alone must report paused, not idle.
+
+    The flag and the state are independent fields; either on its own
+    has to be enough, or a pause shows up as idle.
+    """
+    remote = {**REMOTE_INFO_PAUSED, "isPaused": False}
+    data = payload.merge_payload(remote, EVSE_RECORD)
+    assert data["evseStatus"] == "paused"
+
+
+def test_paused_session_keeps_its_session_id() -> None:
+    """A paused session stays open, so the ID remains available.
+
+    This is why ErrorWrongSessionID cannot mean "no session exists":
+    the resume command has a valid ID to quote.
+    """
+    data = payload.merge_payload(REMOTE_INFO_PAUSED, EVSE_RECORD)
+    assert data["sessionId"] == 1790529768000
+    assert data["instantPowerAsWatt"] == 0
+
+
+
+def test_state_5_is_connected_not_charging() -> None:
+    """Observed right after a resume: unpaused but drawing no power.
+
+    Reported as idle rather than charging, because no energy flows.
+    Calling it charging would make the switch read on while the car
+    takes nothing.
+    """
+    remote = {
+        **REMOTE_INFO_PAUSED,
+        "evseState": 5,
+        "evseSuspensionReason": 0,
+        "isPaused": False,
+    }
+    data = payload.merge_payload(remote, EVSE_RECORD)
+    assert data["evseStatus"] == "idle"
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

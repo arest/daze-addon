@@ -451,35 +451,65 @@ class DazeApiClient:
         }
         return await self._request("POST", url, json=payload)
 
-    async def async_start_charge(self, serial: str) -> dict[str, Any]:
-        """Start charging on a wallbox.
+    async def async_start_charge(
+        self, serial: str, session_id: int | None = None
+    ) -> dict[str, Any]:
+        """Resume charging on a wallbox.
 
         POST /v3/sockets/{serial}/commands/playcharge
 
+        The body must carry both the serial and the session ID. All
+        three behaviours below were observed against hardware:
+
+        - empty body: HTTP 422, ``ErrorWrongSessionID`` (code 4121)
+        - ``{"sessionId": ...}``: HTTP 200, but the charger stays
+          paused. Accepted is not resumed.
+        - ``{"evseSerialNumber": ..., "sessionId": ...}``: HTTP 200 and
+          the charger resumes within about ten seconds, with evseState
+          moving 6 to 5 and isPaused clearing.
+
+        A paused session keeps its ID, so the caller reads it from the
+        coordinator's ``sessionId`` field.
+
         Args:
             serial: The serial number of the wallbox.
+            session_id: The session to resume. Omitted when unknown,
+                which the API rejects with 422.
 
         Returns:
             The response dict.
 
         """
         url = f"{API_BASE_URL}/sockets/{serial}/commands/playcharge"
-        return await self._request("POST", url, json={})
+        payload: dict[str, Any] = {"evseSerialNumber": serial}
+        if session_id is not None:
+            payload["sessionId"] = session_id
+        return await self._request("POST", url, json=payload)
 
-    async def async_stop_charge(self, serial: str) -> dict[str, Any]:
-        """Stop charging on a wallbox.
+    async def async_stop_charge(
+        self, serial: str, session_id: int | None = None
+    ) -> dict[str, Any]:
+        """Suspend charging on a wallbox.
 
         POST /v3/sockets/{serial}/commands/stopcharge
 
+        Sends the same body shape as playcharge. The symmetry is
+        assumed, not measured: only the resume direction has been
+        verified against hardware.
+
         Args:
             serial: The serial number of the wallbox.
+            session_id: The session to suspend, when known.
 
         Returns:
             The response dict.
 
         """
         url = f"{API_BASE_URL}/sockets/{serial}/commands/stopcharge"
-        return await self._request("POST", url, json={})
+        payload: dict[str, Any] = {"evseSerialNumber": serial}
+        if session_id is not None:
+            payload["sessionId"] = session_id
+        return await self._request("POST", url, json=payload)
 
     async def async_get_recharge_sessions(
         self, network_uid: str, limit: int = 1000

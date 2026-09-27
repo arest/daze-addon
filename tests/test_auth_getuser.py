@@ -332,6 +332,53 @@ def test_non_404_errors_still_raise_plain_api_error() -> None:
         raise AssertionError("expected ApiError")
 
 
+
+def test_start_charge_sends_serial_and_session() -> None:
+    """Both fields are required; either alone does not resume.
+
+    Measured against hardware: an empty body returns 422
+    ErrorWrongSessionID, sessionId alone returns 200 but leaves the
+    charger paused, and both together actually resume it.
+    """
+    session = FakeSession([FakeResponse(200, {"message": "", "errors": []})])
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    asyncio.run(api_client.async_start_charge("SER1", 1790529768000))
+
+    call = session.calls[0]
+    assert call["url"].endswith("/sockets/SER1/commands/playcharge")
+    assert call["json"] == {
+        "evseSerialNumber": "SER1",
+        "sessionId": 1790529768000,
+    }
+
+
+def test_stop_charge_sends_the_same_shape() -> None:
+    """Stop mirrors start. Assumed symmetric, not measured."""
+    session = FakeSession([FakeResponse(200, {"message": "", "errors": []})])
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    asyncio.run(api_client.async_stop_charge("SER1", 42))
+
+    assert session.calls[0]["json"] == {
+        "evseSerialNumber": "SER1",
+        "sessionId": 42,
+    }
+
+
+def test_commands_still_send_the_serial_without_a_session() -> None:
+    """An unknown session must not drop the serial from the body."""
+    session = FakeSession([FakeResponse(200, {"message": "", "errors": []})])
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    asyncio.run(api_client.async_start_charge("SER1", None))
+
+    assert session.calls[0]["json"] == {"evseSerialNumber": "SER1"}
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

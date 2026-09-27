@@ -23,11 +23,20 @@ from __future__ import annotations
 
 from typing import Any
 
-# The only EVSE state value confirmed against live hardware: observed
-# as 3 while the charger was delivering 2688 W with a session running.
-# Other values are inferred conservatively rather than guessed, so an
-# unrecognised state reports "idle" rather than inventing a meaning.
+# EVSE state values confirmed against live hardware:
+#
+#   3  charging  observed while delivering 2688 W with a session running
+#   5  connected observed immediately after resuming: isPaused cleared
+#                and evseSuspensionReason zero, but still drawing 0 W.
+#                Reported as idle because no energy is flowing.
+#   6  paused    observed with isPaused true, evseSuspensionReason 3,
+#                zero instant power, and the session still open
+#
+# Other values remain unknown, so an unrecognised state reports "idle"
+# rather than inventing a meaning.
 EVSE_STATE_CHARGING = 3
+EVSE_STATE_CONNECTED = 5
+EVSE_STATE_PAUSED = 6
 
 STATUS_CHARGING = "charging"
 STATUS_IDLE = "idle"
@@ -87,6 +96,9 @@ def derive_status(data: dict[str, Any]) -> str | None:
 
     if state == EVSE_STATE_CHARGING:
         return STATUS_CHARGING
+
+    if state == EVSE_STATE_PAUSED:
+        return STATUS_PAUSED
 
     return STATUS_IDLE
 
