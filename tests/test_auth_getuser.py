@@ -381,7 +381,12 @@ def test_stop_charge_sends_the_same_shape() -> None:
 
 def test_commands_still_send_the_serial_without_a_session() -> None:
     """An unknown session must not drop the serial from the body."""
-    session = FakeSession([FakeResponse(200, {"message": "", "errors": []})])
+    session = FakeSession(
+        [
+            FakeResponse(200, NO_SESSION),
+            FakeResponse(200, {"message": "", "errors": []}),
+        ]
+    )
     client = auth.DazeAuthClient("tok-123", "refresh-123")
     api_client = api.DazeApiClient(client, session)
 
@@ -402,6 +407,10 @@ WRONG_SESSION = {
 }
 
 COMMAND_OK = {"message": "", "errors": []}
+
+# A charger with no open session: the command then sends only
+# the serial, and the API is expected to reject it.
+NO_SESSION = {"data": {"evseState": 1, "chargeSession": None}}
 
 
 def test_retry_budget_covers_observed_failure_rate() -> None:
