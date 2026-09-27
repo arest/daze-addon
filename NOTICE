@@ -1,0 +1,29 @@
+Daze Wallbox Integration for Home Assistant
+===========================================
+
+Original author
+---------------
+
+Created by Andrea Restello (@arest).
+Upstream project: https://github.com/arest/daze-addon
+
+The integration architecture, config flow, entity model, sensor catalog
+and API client are his work, including the reverse engineering of the
+Daze web API, which the vendor does not publish.
+
+This repository
+---------------
+
+A fork maintained by Pedro Tarrinho (@tarrinho) at
+https://github.com/tarrinho/daze-addon
+
+It contains bug fixes found while running the integration against a
+DT01 charger. It is not a redesign, and it carries no claim over the
+original work. See the Credits section of README.md for the specific
+changes.
+
+Licence
+-------
+
+MIT, Copyright (c) 2025 Andrea Restello. See LICENSE, which is carried
+over from the upstream project unchanged.

@@ -9,6 +9,8 @@ Home Assistant integration for **Daze WallBox EV chargers**. Monitor charging me
 
 Daze wallboxes are managed through the [Daze web portal](https://webportal.dazeservice.com). This integration bridges the gap, bringing your wallbox into Home Assistant alongside all your other smart home devices.
 
+> **This is a fork.** The original integration was created by **Andrea Restello** ([@arest](https://github.com/arest)) at [arest/daze-addon](https://github.com/arest/daze-addon), and all of the original design and implementation is his work. This fork adds fixes found while running it against a DT01 charger — see [Credits](#credits).
+
 ---
 
 ## Features
@@ -232,6 +234,34 @@ The integration is validated with:
 - `hassfest` for Home Assistant integration validation
 - HACS validation
 
+---
+
+## Credits
+
+This integration was created by **Andrea Restello** ([@arest](https://github.com/arest)).
+The upstream project is [arest/daze-addon](https://github.com/arest/daze-addon).
+
+Everything this fork does rests on his work: the integration architecture, the
+config flow, the entity model, the sensor catalog and the API client were all
+written upstream. He also reverse-engineered the Daze web API, which is not
+publicly documented — that is the hard part, and none of what follows would
+exist without it.
+
+This fork adds fixes found while running the integration against a DT01
+charger:
+
+- Authenticate through Cognito `GetUser` rather than `/oauth2/userInfo`, which
+  rejects the token scope the Daze portal issues
+- Read the live metrics from where the API actually returns them, nested under
+  `chargeSession`, and pull temperatures and the grid limit from the EVSE record
+- Send the serial and session ID with the charge commands, and retry them
+  through the intermittent Daze RPC link
+- Report the waiting-for-vehicle state, and follow state changes after a command
+
+These are bug fixes to someone else's design, not a redesign. Where the
+upstream project takes them, this fork becomes unnecessary.
+
 ### License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [MIT License](LICENSE), Copyright (c) 2025
+Andrea Restello, carried over unchanged from the upstream project.
