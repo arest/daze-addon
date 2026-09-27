@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import getpass
 import json
-import time
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request

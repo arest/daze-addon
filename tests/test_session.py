@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-
 # ------------------------------------------------------------------
 # Pure logic from custom_components/daze/models.py
 # ------------------------------------------------------------------
