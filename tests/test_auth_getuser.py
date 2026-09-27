@@ -17,6 +17,7 @@ import ast
 import asyncio
 import importlib.util
 import json
+import logging
 import sys
 import types
 from pathlib import Path
@@ -480,6 +481,77 @@ def test_stop_is_retried_the_same_way() -> None:
     asyncio.run(api_client.async_stop_charge("SER1", 42))
 
     assert len(session.calls) == 2
+
+
+
+class _Capture(logging.Handler):
+    """Collects log records for assertions."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Store a record."""
+        self.records.append(record)
+
+
+def _capture_api_logs() -> _Capture:
+    """Attach a capturing handler to the api module's logger."""
+    handler = _Capture()
+    logger = logging.getLogger(api.__name__)
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    return handler
+
+
+def test_retried_failures_do_not_log_warnings() -> None:
+    """A retry that eventually works must not look like an error.
+
+    Each failed attempt used to log at warning from the request layer,
+    so a command that succeeded on the third try left three warnings in
+    the log and looked broken to the user.
+    """
+    session = FakeSession(
+        [
+            FakeResponse(500, RPC_FAILURE),
+            FakeResponse(500, RPC_FAILURE),
+            FakeResponse(200, COMMAND_OK),
+        ]
+    )
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    handler = _capture_api_logs()
+    try:
+        asyncio.run(api_client.async_start_charge("SER1", 42))
+    finally:
+        logging.getLogger(api.__name__).removeHandler(handler)
+
+    warnings = [r for r in handler.records if r.levelno >= logging.WARNING]
+    assert not warnings, [r.getMessage() for r in warnings]
+
+
+def test_giving_up_logs_exactly_one_warning() -> None:
+    """Exhausting the retries is worth one warning, not eight."""
+    budget = api.COMMAND_RETRY_ATTEMPTS
+    session = FakeSession(
+        [FakeResponse(500, RPC_FAILURE) for _ in range(budget)]
+    )
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    handler = _capture_api_logs()
+    try:
+        asyncio.run(api_client.async_start_charge("SER1", 42))
+    except api.ApiCommandRejectedError:
+        pass
+    finally:
+        logging.getLogger(api.__name__).removeHandler(handler)
+
+    warnings = [r for r in handler.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    assert "gave up after" in warnings[0].getMessage()
 
 
 def _main() -> int:

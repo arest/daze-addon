@@ -169,6 +169,7 @@ class DazeApiClient:
         self,
         method: str,
         url: str,
+        log_errors: bool = True,
         **kwargs: Any,
     ) -> Any:
         """Make an authenticated HTTP request with automatic token refresh.
@@ -180,6 +181,9 @@ class DazeApiClient:
         Args:
             method: HTTP method (GET, POST, etc.).
             url: Full URL for the request.
+            log_errors: Whether to log failures here. Callers that
+                retry set this to False so the retries stay quiet, and
+                log once themselves if they finally give up.
             **kwargs: Additional arguments passed to aiohttp.request.
 
         Returns:
@@ -217,13 +221,23 @@ class DazeApiClient:
 
                 if response.status >= 400:
                     body = await response.text()
-                    _LOGGER.warning(
-                        "API error (HTTP %s) on %s %s: %s",
-                        response.status,
-                        method,
-                        url,
-                        body,
-                    )
+                    if log_errors:
+                        _LOGGER.warning(
+                            "API error (HTTP %s) on %s %s: %s",
+                            response.status,
+                            method,
+                            url,
+                            body,
+                        )
+                    else:
+                        _LOGGER.debug(
+                            "API error (HTTP %s) on %s %s, handled by "
+                            "caller: %s",
+                            response.status,
+                            method,
+                            url,
+                            body,
+                        )
                     raise ApiError(
                         f"API {method} {url} failed with status "
                         f"{response.status}: {body}",
@@ -554,7 +568,9 @@ class DazeApiClient:
 
         for attempt_number in range(1, attempts + 1):
             try:
-                result = await self._request("POST", url, json=payload)
+                result = await self._request(
+                    "POST", url, log_errors=False, json=payload
+                )
             except ApiAuthError:
                 raise
             except ApiError as err:
@@ -594,8 +610,11 @@ class DazeApiClient:
 
         code, _ = _code_and_hint_from_error(last_error or Exception())
         _LOGGER.warning(
-            "Command still failing after %d attempts: %s",
+            "Command %s gave up after %d attempts over %.0fs. The Daze "
+            "service could not reach the wallbox. Last error: %s",
+            url.rsplit("/", 1)[-1],
             attempts,
+            (attempts - 1) * delay,
             last_error,
         )
         raise ApiCommandRejectedError(
