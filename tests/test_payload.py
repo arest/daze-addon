@@ -1,0 +1,309 @@
+"""Tests for payload normalisation, using a real captured response.
+
+The fixtures below are the actual shape returned by the Daze API for a
+DT01 charger, captured while it was delivering 2688 W. Values are
+verbatim apart from identifiers.
+
+This is the bug these tests pin: every sensor read a top-level field
+name, but the live metrics arrive nested under ``chargeSession``, and
+the temperatures, grid limit and eco mode arrive from a different
+endpoint entirely. Nothing errored, so entities were created and every
+one of them read None.
+
+Run with pytest, or standalone:
+
+    python3 tests/test_payload.py
+"""
+
+from __future__ import annotations
+
+import ast
+import importlib.util
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_DIR = ROOT / "custom_components" / "daze"
+
+
+def _load(name: str, filename: str) -> Any:
+    """Load a single integration module without Home Assistant."""
+    spec = importlib.util.spec_from_file_location(name, PACKAGE_DIR / filename)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+payload = _load("daze_payload_under_test", "payload.py")
+catalog = _load("daze_catalog_under_test", "sensor_catalog.py")
+
+
+# Captured from GET /sockets/{serial}/remoteInfo while charging.
+REMOTE_INFO: dict[str, Any] = {
+    "active": True,
+    "chargeSession": {
+        "chargeTime": "00:19:53",
+        "currentlyChargingInThreePhase": False,
+        "deliveredEnergyAsWattHour": 1258,
+        "instantPowerAsWatt": 2688,
+        "lastACVoltageL1": 233,
+        "lastACVoltageL2": 1,
+        "lastACVoltageL3": 7,
+        "lastChargingCurrentInstantL1": 11677,
+        "lastChargingCurrentInstantL2": 0,
+        "lastChargingCurrentInstantL3": 0,
+        "lastMaxChargingCurrent": 11739,
+        "sessionId": 1790524789000,
+        "startTime": "2026-09-27T15:59:49Z",
+        "user": None,
+    },
+    "evseIsThreePhase": False,
+    "evseState": 3,
+    "evseSuspensionReason": 0,
+    "evseSystemError": 0,
+    "isPaused": False,
+    "isScheduledPaused": False,
+    "isSmartTariffPaused": False,
+    "nextScheduleInfo": None,
+    "smartTariffBatteryInfo": None,
+}
+
+# Captured from GET /networks/{uid}/evses?includeEcoInfo=true.
+EVSE_RECORD: dict[str, Any] = {
+    "active": True,
+    "deviceProfile": "DT01",
+    "ecoModeEnabled": False,
+    "evseIsThreePhase": False,
+    "evseName": "Daze HomeTT",
+    "firmwareVersion": "13.3.0",
+    "lastMaxInstallationCurrent": 32000,
+    "lastStatus": 3,
+    "maxExternalChargingCurrentInMilliAmps": 11739,
+    "operationMode": 0,
+    "photovoltaic": True,
+    "schedules": [],
+    "serialNumber": "TESTSERIAL",
+    "softwareVersion": "22.4.0",
+    "sockets": [
+        {
+            "active": True,
+            "isPrimary": True,
+            "lastACVoltageL1": 233,
+            "lastBoardL1Temperature": 34,
+            "lastCaseTemperature": 40,
+            "lastChargingCurrentInstantL1": 11677,
+            "lastEnergy": 1258,
+            "lastMaxChargingCurrent": 11739,
+            "lastPower": 2688,
+            "lastStatus": 3,
+            "maxExternalChargingCurrentInMilliAmps": 11739,
+            "operationMode": 0,
+            "serialNumber": "TESTSERIAL",
+        }
+    ],
+    "supplyGridMaxPower": 3000,
+}
+
+
+def merged() -> dict[str, Any]:
+    """Return the merged payload for the captured fixtures."""
+    return payload.merge_payload(REMOTE_INFO, EVSE_RECORD)
+
+
+# ------------------------------------------------------------------
+# Merge behaviour
+# ------------------------------------------------------------------
+
+
+def test_session_metrics_are_lifted_to_top_level() -> None:
+    """Live metrics nested under chargeSession must become readable."""
+    data = merged()
+
+    assert data["instantPowerAsWatt"] == 2688
+    assert data["deliveredEnergyAsWattHour"] == 1258
+    assert data["lastChargingCurrentInstantL1"] == 11677
+    assert data["lastACVoltageL1"] == 233
+
+
+def test_evse_record_supplies_fields_remote_info_lacks() -> None:
+    """Temperatures, grid limit and eco mode come from the EVSE record."""
+    data = merged()
+
+    assert data["lastBoardL1Temperature"] == 34
+    assert data["lastCaseTemperature"] == 40
+    assert data["supplyGridMaxPower"] == 3000
+    assert data["ecoModeEnabled"] is False
+    assert data["photovoltaic"] is True
+    assert data["maxExternalChargingCurrentInMilliAmps"] == 11739
+
+
+def test_session_values_win_over_socket_snapshot() -> None:
+    """The live session is fresher than the cached socket reading."""
+    stale = {**EVSE_RECORD}
+    stale["sockets"] = [{**EVSE_RECORD["sockets"][0], "lastACVoltageL1": 999}]
+
+    data = payload.merge_payload(REMOTE_INFO, stale)
+
+    assert data["lastACVoltageL1"] == 233
+
+
+def test_merge_survives_a_missing_evse_record() -> None:
+    """A failed EVSE fetch must not break the live metrics."""
+    data = payload.merge_payload(REMOTE_INFO, None)
+
+    assert data["instantPowerAsWatt"] == 2688
+    assert data.get("lastCaseTemperature") is None
+
+
+def test_merge_survives_empty_input() -> None:
+    """No data at all must not raise."""
+    assert payload.merge_payload(None, None) == {
+        "chargeSession": None,
+        "nextScheduleInfo": None,
+    }
+
+
+# ------------------------------------------------------------------
+# Status derivation
+# ------------------------------------------------------------------
+
+
+def test_state_3_is_charging() -> None:
+    """Confirmed against hardware delivering 2688 W."""
+    assert merged()["evseStatus"] == "charging"
+
+
+def test_paused_flags_win_over_state() -> None:
+    """Any pause flag reports paused."""
+    for flag in ("isPaused", "isScheduledPaused", "isSmartTariffPaused"):
+        remote = {**REMOTE_INFO, flag: True}
+        data = payload.merge_payload(remote, EVSE_RECORD)
+        assert data["evseStatus"] == "paused", flag
+
+
+def test_system_error_reports_error() -> None:
+    """A non-zero system error outranks the state value."""
+    remote = {**REMOTE_INFO, "evseSystemError": 7}
+    assert payload.merge_payload(remote, EVSE_RECORD)["evseStatus"] == "error"
+
+
+def test_inactive_reports_offline() -> None:
+    """active=False means the charger is not reachable."""
+    remote = {**REMOTE_INFO, "active": False}
+    assert payload.merge_payload(remote, EVSE_RECORD)["evseStatus"] == "offline"
+
+
+def test_unknown_state_reports_idle_not_charging() -> None:
+    """Unconfirmed state values must never be reported as charging."""
+    for state in (0, 1, 2, 4, 5, 99):
+        remote = {**REMOTE_INFO, "evseState": state}
+        data = payload.merge_payload(remote, EVSE_RECORD)
+        assert data["evseStatus"] == "idle", state
+
+
+def test_no_state_information_yields_no_status() -> None:
+    """Absent state must not be invented."""
+    assert payload.derive_status({}) is None
+
+
+# ------------------------------------------------------------------
+# End-to-end against the real sensor catalog
+# ------------------------------------------------------------------
+
+
+def test_every_live_sensor_reads_a_value() -> None:
+    """The whole point: no live sensor may be None for this payload.
+
+    Session-history sensors are excluded because they are computed by
+    the coordinator from a separate endpoint.
+    """
+    data = merged()
+
+    history = {
+        "last_session_energy",
+        "last_session_duration",
+        "last_session_cost",
+        "last_session_start",
+        "last_session_end",
+        "lifetime_energy",
+        "total_sessions",
+        "next_scheduled_charge",
+    }
+
+    blank = [
+        spec.key
+        for spec in catalog.EVSE_SENSOR_CATALOG
+        if spec.key not in history and spec.value_fn(data) is None
+    ]
+
+    assert not blank, f"sensors still reading None: {blank}"
+
+
+def test_catalog_reads_only_fields_the_payload_provides() -> None:
+    """Guard against a value function drifting to an absent field."""
+    data = merged()
+    source = (PACKAGE_DIR / "sensor_catalog.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    computed = {
+        "last_session_cost",
+        "last_session_duration",
+        "last_session_end",
+        "last_session_energy",
+        "last_session_start",
+        "lifetime_energy",
+        "total_sessions",
+    }
+
+    unknown: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+        ):
+            argument = node.args[0]
+            if isinstance(argument, ast.Constant) and isinstance(
+                argument.value, str
+            ):
+                name = argument.value
+                if name not in computed and name not in data:
+                    unknown.append(name)
+
+    assert not unknown, f"catalog reads fields the API never returns: {unknown}"
+
+
+def test_switch_status_check_matches_derived_status() -> None:
+    """switch.py compares against the string 'charging'."""
+    data = merged()
+    assert str(data.get("evseStatus")).lower() == "charging"
+
+
+def _main() -> int:
+    """Run every test in this module and report results."""
+    tests = [
+        value
+        for name, value in sorted(globals().items())
+        if name.startswith("test_") and callable(value)
+    ]
+
+    failures = 0
+    for test in tests:
+        try:
+            test()
+        except Exception as err:  # noqa: BLE001 - standalone runner
+            failures += 1
+            print(f"FAIL {test.__name__}: {type(err).__name__}: {err}")
+        else:
+            print(f"ok   {test.__name__}")
+
+    print(f"\n{len(tests) - failures} passed, {failures} failed")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main())

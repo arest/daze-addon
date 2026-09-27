@@ -41,3 +41,7 @@ credentials.*
 *.cert
 *.p12
 *.pfx
+# Probe and diagnostic output (may contain device identifiers)
+/log
+*.out
+probe-*.txt

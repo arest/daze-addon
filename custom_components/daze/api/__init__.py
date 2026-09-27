@@ -354,6 +354,32 @@ class DazeApiClient:
         data = await self._request("GET", url)
         return data.get("data", [])
 
+    async def async_get_evse_record(
+        self, network_uid: str, serial: str
+    ) -> dict[str, Any]:
+        """Fetch the charger record for one serial number.
+
+        The socket remoteInfo response carries the live session but not
+        the charger's temperatures, grid limits, eco mode or configured
+        current. Those live here, so the coordinator needs both.
+
+        Args:
+            network_uid: The unique ID of the network.
+            serial: The serial number to select from the network.
+
+        Returns:
+            The matching EVSE record, or an empty dict if absent.
+
+        """
+        url = f"{API_BASE_URL}/networks/{network_uid}/evses?includeEcoInfo=true"
+        data = await self._request("GET", url)
+
+        for evse in data.get("data", []):
+            if isinstance(evse, dict) and evse.get("serialNumber") == serial:
+                return evse
+
+        return {}
+
     async def async_get_socket_remote_info(
         self, serial: str
     ) -> dict[str, Any]:

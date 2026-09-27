@@ -57,6 +57,7 @@ def presence_on_off(data: dict[str, Any], key: str) -> str | None:
 
 
 _SCHEDULED_CHARGE_KEYS: tuple[str, ...] = (
+    "nextScheduleInfo",
     "nextScheduledCharge",
     "scheduledChargeTime",
     "scheduledStart",
@@ -135,14 +136,14 @@ EVSE_SENSOR_CATALOG: tuple[EVSESensorSpec, ...] = (
         device_class="temperature",
         state_class="measurement",
         native_unit_of_measurement="°C",
-        value_fn=lambda data: data.get("boardTemperature"),
+        value_fn=lambda data: data.get("lastBoardL1Temperature"),
     ),
     EVSESensorSpec(
         key="case_temperature",
         device_class="temperature",
         state_class="measurement",
         native_unit_of_measurement="°C",
-        value_fn=lambda data: data.get("caseTemperature"),
+        value_fn=lambda data: data.get("lastCaseTemperature"),
     ),
     EVSESensorSpec(
         key="evse_status",
@@ -155,14 +156,14 @@ EVSE_SENSOR_CATALOG: tuple[EVSESensorSpec, ...] = (
         device_class="power",
         native_unit_of_measurement="W",
         entity_category="diagnostic",
-        value_fn=lambda data: data.get("gridMaxPower"),
+        value_fn=lambda data: data.get("supplyGridMaxPower"),
     ),
     EVSESensorSpec(
         key="is_photovoltaic",
         device_class="enum",
         entity_category="diagnostic",
         options=("on", "off"),
-        value_fn=lambda data: presence_on_off(data, "is_photovoltaic"),
+        value_fn=lambda data: presence_on_off(data, "photovoltaic"),
     ),
     EVSESensorSpec(
         key="is_three_phase",

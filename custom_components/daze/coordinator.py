@@ -27,6 +27,7 @@ from .const import (
     DOMAIN,
 )
 from .models import RechargeSession
+from .payload import merge_payload
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,6 +42,10 @@ SESSION_FETCH_INTERVAL = 300  # seconds
 # a durable condition, not a transient error, so back off hard instead
 # of retrying every poll and filling the log with warnings.
 SESSION_MISSING_RETRY_INTERVAL = 3600  # seconds
+
+# The charger record holds configuration and slow-moving readings,
+# so it does not need the live metric cadence.
+EVSE_FETCH_INTERVAL = 120  # seconds
 
 
 class DazeDataUpdateCoordinator(
@@ -79,6 +84,8 @@ class DazeDataUpdateCoordinator(
         self._total_updates: int = 0
         self._consecutive_failures: int = 0
         self._cached_sessions: list[RechargeSession] = []
+        self._cached_evse: dict[str, Any] = {}
+        self._next_evse_fetch: float = 0.0
         self._next_session_fetch: float = 0.0
         self._sessions_missing_logged: bool = False
 
@@ -145,12 +152,33 @@ class DazeDataUpdateCoordinator(
         self._total_updates += 1
 
         try:
-            data = await self._api_client.async_get_socket_remote_info(
+            remote_info = await self._api_client.async_get_socket_remote_info(
                 self._serial_number
             )
+
+            # The EVSE record supplies temperatures, grid limits, eco
+            # mode and the configured current, none of which appear in
+            # remoteInfo. It changes slowly, so it is cached.
+            if time.time() >= self._next_evse_fetch:
+                try:
+                    self._cached_evse = (
+                        await self._api_client.async_get_evse_record(
+                            self._network_uid, self._serial_number
+                        )
+                    )
+                except ApiError as err:
+                    _LOGGER.debug(
+                        "Could not refresh the EVSE record: %s", err
+                    )
+                else:
+                    self._next_evse_fetch = time.time() + EVSE_FETCH_INTERVAL
+
+            data = merge_payload(remote_info, self._cached_evse)
+
             _LOGGER.debug(
-                "Coordinator fetched socket data for %s",
+                "Coordinator fetched socket data for %s (%d fields)",
                 self._serial_number,
+                len(data),
             )
         except ApiAuthError as err:
             self._last_fail_time = time.time()
