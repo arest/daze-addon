@@ -371,7 +371,9 @@ def verify_changed(
     return False, state
 
 
-def retry_mode(token: str, serial: str, state: dict) -> int:
+def retry_mode(
+    token: str, serial: str, state: dict, flags: dict | None = None
+) -> int:
     """Send one command repeatedly until the charger state changes.
 
     The command shape is already known to be correct. What is not known
@@ -382,10 +384,17 @@ def retry_mode(token: str, serial: str, state: dict) -> int:
     session_id = session.get("sessionId") if isinstance(session, dict) else None
     quoted = urllib.parse.quote(serial, safe="")
 
-    print("\nWhich direction do you want to test?")
-    print("  1  start / resume  (playcharge)")
-    print("  2  stop            (stopcharge)")
-    choice = input("Choice [1/2]: ").strip()
+    flags = flags or {}
+    direction = flags.get("direction")
+
+    if direction is None:
+        print("\nWhich direction do you want to test?")
+        print("  1  start / resume  (playcharge)")
+        print("  2  stop            (stopcharge)")
+        choice = input("Choice [1/2]: ").strip()
+    else:
+        choice = "2" if direction.lower().startswith("sto") else "1"
+        print(f"\nDirection from flag: {direction}")
 
     if choice == "2":
         path = f"/sockets/{quoted}/commands/stopcharge"
@@ -398,11 +407,17 @@ def retry_mode(token: str, serial: str, state: dict) -> int:
     if session_id is not None:
         body["sessionId"] = session_id
 
-    max_attempts = input("How many attempts at most? [8]: ").strip()
-    attempts = int(max_attempts) if max_attempts.isdigit() else 8
+    if flags.get("attempts") is not None:
+        attempts = int(flags["attempts"])
+    else:
+        entered = input("How many attempts at most? [8]: ").strip()
+        attempts = int(entered) if entered.isdigit() else 8
 
-    gap = input("Seconds between attempts? [2]: ").strip()
-    gap_seconds = int(gap) if gap.isdigit() else 2
+    if flags.get("gap") is not None:
+        gap_seconds = float(flags["gap"])
+    else:
+        entered = input("Seconds between attempts? [6]: ").strip()
+        gap_seconds = float(entered) if entered.replace(".", "").isdigit() else 6
 
     print(f"\nWill send this up to {attempts} time(s), {gap_seconds}s apart:")
     print(f"  POST {API_BASE_URL}{path}")
@@ -410,8 +425,9 @@ def retry_mode(token: str, serial: str, state: dict) -> int:
     print(f"\nBaseline: evseState={state.get('evseState')} "
           f"isPaused={state.get('isPaused')}")
 
-    if input("\nProceed? [yes/no] ").strip().lower() != "yes":
-        return 0
+    if not flags.get("assume_yes"):
+        if input("\nProceed? [yes/no] ").strip().lower() != "yes":
+            return 0
 
     statuses: list[str] = []
 
@@ -448,8 +464,47 @@ def retry_mode(token: str, serial: str, state: dict) -> int:
     return 1
 
 
+def parse_flags(argv: list[str]) -> dict:
+    """Read the optional command-line flags.
+
+    Supported:
+        --direction start|stop   which command to send
+        --attempts N             how many times to try
+        --gap S                  seconds between attempts
+        --yes                    skip the per-attempt confirmation
+
+    The refresh token is never accepted as a flag: it would land in the
+    shell history and the process list.
+    """
+    flags: dict = {
+        "direction": None,
+        "attempts": None,
+        "gap": None,
+        "assume_yes": False,
+    }
+
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == "--yes":
+            flags["assume_yes"] = True
+        elif item == "--direction" and index + 1 < len(argv):
+            index += 1
+            flags["direction"] = argv[index]
+        elif item == "--attempts" and index + 1 < len(argv):
+            index += 1
+            flags["attempts"] = int(argv[index])
+        elif item == "--gap" and index + 1 < len(argv):
+            index += 1
+            flags["gap"] = float(argv[index])
+        index += 1
+
+    return flags
+
+
 def main() -> int:
     """Try each resume variant with per-attempt confirmation."""
+    flags = parse_flags(sys.argv[1:])
     print("Daze resume-command finder")
     print()
     print("WARNING: this sends COMMANDS to your wallbox. A successful")
@@ -485,8 +540,11 @@ def main() -> int:
     print("\nWhat do you want to do?")
     print("  1  retry one known command until it works (measures flakiness)")
     print("  2  search for a working command variant")
+    if flags.get("direction") or flags.get("assume_yes"):
+        return retry_mode(token, serial, state, flags)
+
     if input("Choice [1/2]: ").strip() != "2":
-        return retry_mode(token, serial, state)
+        return retry_mode(token, serial, state, flags)
 
     paused = bool(state.get("isPaused"))
 
