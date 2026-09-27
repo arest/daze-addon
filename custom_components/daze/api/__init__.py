@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from aiohttp import ClientSession
@@ -29,6 +30,51 @@ class ApiAuthError(Exception):
 
 class ApiError(Exception):
     """Raised for non-auth API errors (4xx, 5xx, network issues)."""
+
+
+class ApiCommandRejectedError(ApiError):
+    """Raised when the charger refuses a command it cannot perform.
+
+    Distinguished from a generic ApiError so callers can tell the user
+    what the charger is objecting to, rather than repeating a stock
+    "check the car is connected" for every failure.
+    """
+
+    def __init__(self, message: str, *, code: int | None = None) -> None:
+        """Store the upstream error code alongside the message."""
+        super().__init__(message)
+        self.code = code
+
+
+# Upstream error codes seen from the command endpoints, with what each
+# actually meant when observed.
+COMMAND_ERROR_HINTS: dict[int, str] = {
+    # Sent with no session ID, or naming a session that is not paused.
+    4121: (
+        "there is no paused charging session to resume"
+    ),
+    # The request was accepted but the charger could not carry it out,
+    # observed when the charger was already running or idle rather than
+    # paused.
+    101: (
+        "the charger could not carry out the command, which usually "
+        "means it is not in a state where that command applies"
+    ),
+}
+
+
+def _code_and_hint_from_error(err: Exception) -> tuple[int | None, str]:
+    """Recover the upstream error code from a raised ApiError.
+
+    The request layer folds the response body into the exception
+    message, so the structured code has to be read back out of it.
+    """
+    match = re.search(r'"code"\s*:\s*(\d+)', str(err))
+    if not match:
+        return None, ""
+
+    code = int(match.group(1))
+    return code, COMMAND_ERROR_HINTS.get(code, "")
 
 
 class ApiNotFoundError(ApiError):
@@ -451,6 +497,32 @@ class DazeApiClient:
         }
         return await self._request("POST", url, json=payload)
 
+    async def _post_command(
+        self, url: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """POST a charger command, explaining a refusal when it fails.
+
+        The command endpoints answer with a structured error list. A
+        generic ApiError loses that detail, so the caller cannot tell a
+        "nothing to resume" refusal from a real outage.
+
+        Raises:
+            ApiCommandRejectedError: If the charger refused the command.
+
+        """
+        try:
+            return await self._request("POST", url, json=payload)
+        except ApiAuthError:
+            raise
+        except ApiError as err:
+            code, hint = _code_and_hint_from_error(err)
+            if hint:
+                raise ApiCommandRejectedError(
+                    f"The charger refused the command because {hint}.",
+                    code=code,
+                ) from err
+            raise
+
     async def async_start_charge(
         self, serial: str, session_id: int | None = None
     ) -> dict[str, Any]:
@@ -484,7 +556,7 @@ class DazeApiClient:
         payload: dict[str, Any] = {"evseSerialNumber": serial}
         if session_id is not None:
             payload["sessionId"] = session_id
-        return await self._request("POST", url, json=payload)
+        return await self._post_command(url, payload)
 
     async def async_stop_charge(
         self, serial: str, session_id: int | None = None
@@ -509,7 +581,7 @@ class DazeApiClient:
         payload: dict[str, Any] = {"evseSerialNumber": serial}
         if session_id is not None:
             payload["sessionId"] = session_id
-        return await self._request("POST", url, json=payload)
+        return await self._post_command(url, payload)
 
     async def async_get_recharge_sessions(
         self, network_uid: str, limit: int = 1000

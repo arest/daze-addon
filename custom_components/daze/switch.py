@@ -19,7 +19,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import ApiAuthError, ApiError
+from .api import ApiAuthError, ApiCommandRejectedError, ApiError
 from .const import DOMAIN
 from .coordinator import DazeDataUpdateCoordinator
 
@@ -111,6 +111,15 @@ class DazeWallboxSwitchEntity(
                 "Authentication failed when trying to start charging. "
                 "Please re-authenticate the integration."
             )
+        except ApiCommandRejectedError as err:
+            # The charger explained why; relay that rather
+            # than the stock 'check the car is connected'.
+            _LOGGER.info(
+                "Charger refused the command on %s: %s",
+                self._serial_number,
+                err,
+            )
+            self._notify_error(str(err))
         except ApiError as err:
             _LOGGER.warning(
                 "API error starting charge on %s: %s",
@@ -150,6 +159,15 @@ class DazeWallboxSwitchEntity(
                 "Authentication failed when trying to stop charging. "
                 "Please re-authenticate the integration."
             )
+        except ApiCommandRejectedError as err:
+            # The charger explained why; relay that rather
+            # than the stock 'check the car is connected'.
+            _LOGGER.info(
+                "Charger refused the command on %s: %s",
+                self._serial_number,
+                err,
+            )
+            self._notify_error(str(err))
         except ApiError as err:
             _LOGGER.warning(
                 "API error stopping charge on %s: %s",

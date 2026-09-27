@@ -169,17 +169,59 @@ def read_state(token: str, serial: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def start_candidates(serial: str, last_session_id: object) -> list[tuple[str, dict]]:
+    """Variants for starting when no session is paused.
+
+    Resuming is solved: playcharge with the serial and the live session
+    ID works. Starting from a connected-but-idle charger is a different
+    problem, because there is no session to name and playcharge answers
+    HTTP 500 code 101.
+    """
+    quoted = urllib.parse.quote(serial, safe="")
+
+    variants: list[tuple[str, dict]] = [
+        # Play with no session at all, only the serial.
+        (f"/sockets/{quoted}/commands/playcharge", {"evseSerialNumber": serial}),
+        # A dedicated start rather than a resume.
+        (f"/sockets/{quoted}/commands/startcharge", {"evseSerialNumber": serial}),
+        (f"/sockets/{quoted}/commands/startcharge", {}),
+        # Zero as an explicit "no current session" marker.
+        (
+            f"/sockets/{quoted}/commands/playcharge",
+            {"evseSerialNumber": serial, "sessionId": 0},
+        ),
+        # The command scoped to the EVSE rather than the socket.
+        (f"/evses/{quoted}/commands/playcharge", {"evseSerialNumber": serial}),
+    ]
+
+    if last_session_id:
+        # The previous session ID, in case the charger expects the most
+        # recent one even after it closed.
+        variants.append(
+            (
+                f"/sockets/{quoted}/commands/playcharge",
+                {"evseSerialNumber": serial, "sessionId": last_session_id},
+            )
+        )
+
+    return variants
+
+
 def candidates(
     serial: str, session_id: object, restore_current: int
 ) -> list[tuple[str, dict]]:
-    """Build the request variants to try, most likely first.
+    """Build the resume variants, most likely first.
 
-    Variant 1 is already known to return HTTP 200 without resuming, so
-    it is kept only as a control.
+    The first entry is the confirmed winner: it moved the charger from
+    evseState 6 to 5 with isPaused clearing.
     """
     quoted = urllib.parse.quote(serial, safe="")
 
     return [
+        (
+            f"/sockets/{quoted}/commands/playcharge",
+            {"evseSerialNumber": serial, "sessionId": session_id},
+        ),
         # Restoring the current limit. While paused the session reports
         # lastMaxChargingCurrent 0, so the pause may simply be a zero
         # current limit rather than a session state.
@@ -317,31 +359,29 @@ def main() -> int:
     print(f"suspension: {state.get('evseSuspensionReason')}")
     print(f"sessionId : {session_id}")
 
-    if session_id is None:
-        print("\nNo session ID available. There is nothing to resume, so")
-        print("these variants cannot be tested meaningfully. Start a")
-        print("session first, pause it, then run this again.")
-        return 1
+    paused = bool(state.get("isPaused"))
 
-    if not state.get("isPaused"):
-        print("\nThe charger does not report being paused. Resuming is")
-        print("only meaningful from a paused state; run this while it is")
-        print("actually paused or the results will not mean anything.")
-        answer = input("Continue anyway? [yes/no] ").strip().lower()
-        if answer != "yes":
-            return 0
+    if paused and session_id is not None:
+        print("\nMode: RESUME (charger is paused with an open session).")
+        # While paused the session reports a zero current limit, so
+        # restoring a sane value is one of the things worth trying.
+        restore = 0
+        if isinstance(session, dict):
+            restore = session.get("lastMaxChargingCurrent") or 0
+        if not restore:
+            entered = input("Current limit to restore in mA [11739]: ").strip()
+            restore = int(entered) if entered.isdigit() else 11739
+        variants = candidates(serial, session_id, restore)
+    else:
+        print("\nMode: START (charger is not paused).")
+        print("Resuming is already solved; this searches for the call")
+        print("that starts charging from a connected but idle charger.")
+        last_id = session_id
+        if last_id is None:
+            entered = input("Last known session ID, blank to skip: ").strip()
+            last_id = int(entered) if entered.isdigit() else None
+        variants = start_candidates(serial, last_id)
 
-    # While paused the session reports a zero current limit, so
-    # restoring a sane value is one of the things worth trying.
-    restore = 0
-    if isinstance(session, dict):
-        restore = session.get("lastMaxChargingCurrent") or 0
-    if not restore:
-        entered = input("\nCurrent limit to restore in mA [11739]: ").strip()
-        restore = int(entered) if entered.isdigit() else 11739
-    print(f"Will restore current to {restore} mA if that variant is tried.")
-
-    variants = candidates(serial, session_id, restore)
     print(f"\n{len(variants)} variant(s) to try. Ctrl-C stops at any point.")
 
     for index, (path, body) in enumerate(variants, start=1):
