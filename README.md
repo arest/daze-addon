@@ -1,5 +1,6 @@
 # Daze Wallbox
 
+[![Version](https://img.shields.io/github/v/tag/tarrinho/daze-addon?label=version&sort=semver&color=blue)](https://github.com/tarrinho/daze-addon/releases)
 [![HA Community](https://img.shields.io/badge/Home%20Assistant-2025.x-41BDF5?logo=homeassistant)](https://www.home-assistant.io/)
 [![HACS Validation](https://github.com/tarrinho/daze-addon/actions/workflows/validate.yaml/badge.svg)](https://github.com/tarrinho/daze-addon/actions/workflows/validate.yaml)
 [![GitHub](https://img.shields.io/github/license/tarrinho/daze-addon)](LICENSE)
