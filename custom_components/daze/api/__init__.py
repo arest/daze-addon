@@ -20,13 +20,20 @@ from .auth import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# The command RPC fails intermittently and needs more attempts than
-# is comfortable: around six were observed before a start or stop
-# took effect. Eight tries 1.5s apart gives headroom over that while
-# keeping the worst case near fifteen seconds, which is tolerable
-# for a command that physically switches a charger.
+# The command RPC fails intermittently. Retrying it eight times 1.5s
+# apart was not enough: the whole burst finished inside eleven seconds
+# and every attempt failed.
+#
+# Manual presses that did succeed were roughly sixteen seconds apart,
+# which suggests the link needs time to recover rather than simply more
+# attempts. So the delay grows with each try instead of staying flat.
+#
+# 1.5, 3, 4.5, then 6s for the rest: eight attempts spread over about
+# 33 seconds. That is a long time to hold a service call, but shorter
+# than pressing a button by hand until it works.
 COMMAND_RETRY_ATTEMPTS = 8
 COMMAND_RETRY_DELAY = 1.5
+COMMAND_RETRY_MAX_DELAY = 6.0
 
 
 class ApiAuthError(Exception):
@@ -78,6 +85,14 @@ COMMAND_ERROR_HINTS: dict[int, str] = {
         "the Daze service could not reach the wallbox"
     ),
 }
+
+
+def _total_retry_seconds(attempts: int, base_delay: float) -> float:
+    """Return how long a full run of retries spends waiting."""
+    return sum(
+        min(base_delay * n, COMMAND_RETRY_MAX_DELAY)
+        for n in range(1, attempts)
+    )
 
 
 def _code_and_hint_from_error(err: Exception) -> tuple[int | None, str]:
@@ -591,14 +606,17 @@ class DazeApiClient:
                     raise
 
                 if attempt_number < attempts:
+                    wait = min(
+                        delay * attempt_number, COMMAND_RETRY_MAX_DELAY
+                    )
                     _LOGGER.debug(
                         "Transient RPC failure on attempt %d of %d, "
                         "retrying in %.1fs",
                         attempt_number,
                         attempts,
-                        delay,
+                        wait,
                     )
-                    await asyncio.sleep(delay)
+                    await asyncio.sleep(wait)
             else:
                 if attempt_number > 1:
                     _LOGGER.info(
@@ -614,13 +632,15 @@ class DazeApiClient:
             "service could not reach the wallbox. Last error: %s",
             url.rsplit("/", 1)[-1],
             attempts,
-            (attempts - 1) * delay,
+            _total_retry_seconds(attempts, delay),
             last_error,
         )
         raise ApiCommandRejectedError(
             f"The Daze service could not reach the wallbox after "
-            f"{attempts} attempts. This is intermittent rather than a "
-            "fault; try again shortly.",
+            f"{attempts} attempts over "
+            f"{_total_retry_seconds(attempts, delay):.0f} seconds. This "
+            "is a fault on Daze's side rather than in the charger or the "
+            "car; it usually clears on its own. Try again in a minute.",
             code=code,
         ) from last_error
 

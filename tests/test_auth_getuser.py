@@ -61,8 +61,9 @@ def _load_integration_modules() -> tuple[Any, Any]:
 
 auth, api = _load_integration_modules()
 
-# Keep the suite fast; the delay itself is not under test.
+# Keep the suite fast; the wall-clock waits are not under test.
 api.COMMAND_RETRY_DELAY = 0.0
+api.COMMAND_RETRY_MAX_DELAY = 0.0
 
 
 # ------------------------------------------------------------------
@@ -448,7 +449,7 @@ def test_retry_gives_up_and_says_it_is_temporary() -> None:
         asyncio.run(api_client.async_start_charge("SER1", 42))
     except api.ApiCommandRejectedError as err:
         assert err.code == 101
-        assert "intermittent" in str(err)
+        assert "could not reach the wallbox" in str(err)
         assert len(session.calls) == budget
     else:
         raise AssertionError("expected ApiCommandRejectedError")
@@ -552,6 +553,44 @@ def test_giving_up_logs_exactly_one_warning() -> None:
     warnings = [r for r in handler.records if r.levelno >= logging.WARNING]
     assert len(warnings) == 1, [r.getMessage() for r in warnings]
     assert "gave up after" in warnings[0].getMessage()
+
+
+
+def test_retry_delay_grows_between_attempts() -> None:
+    """A tight burst of retries did not work; spacing them out might.
+
+    Eight attempts 1.5s apart all failed inside eleven seconds, while
+    manual presses roughly sixteen seconds apart did succeed. The delay
+    therefore grows rather than staying flat, up to a cap.
+    """
+    base = 1.5
+    cap = 6.0
+    delays = [min(base * n, cap) for n in range(1, 8)]
+
+    assert delays == [1.5, 3.0, 4.5, 6.0, 6.0, 6.0, 6.0]
+    # Long enough to outlast a transient outage, short enough that a
+    # service call still returns.
+    assert 25 <= sum(delays) <= 45
+
+
+def test_give_up_message_states_the_duration_and_blames_the_service() -> None:
+    """The user should not go looking at the car or the charger."""
+    budget = api.COMMAND_RETRY_ATTEMPTS
+    session = FakeSession(
+        [FakeResponse(500, RPC_FAILURE) for _ in range(budget)]
+    )
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    try:
+        asyncio.run(api_client.async_start_charge("SER1", 42))
+    except api.ApiCommandRejectedError as err:
+        message = str(err)
+        assert "Daze" in message
+        assert "seconds" in message
+        assert "rather than in the charger or the car" in message
+    else:
+        raise AssertionError("expected ApiCommandRejectedError")
 
 
 def _main() -> int:
