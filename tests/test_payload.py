@@ -514,6 +514,68 @@ def test_ceiling_ignores_non_numeric_and_zero_values() -> None:
     assert payload.max_charging_current(data) == 32000
 
 
+
+def test_minimum_follows_the_power_floor_not_six_amps() -> None:
+    """Measured: 6400 mA was rejected, 6521 mA accepted, at 232 V.
+
+    The charger enforces 1500 W, so the minimum current depends on the
+    supply voltage. Offering a flat 6 A made the bottom of the slider
+    fail every time.
+    """
+    data = payload.merge_payload(
+        REMOTE_INFO,
+        {**EVSE_RECORD, "sockets": [{"lastACVoltageL1": 232}]},
+    )
+
+    floor = payload.min_charging_current(data)
+
+    # Above the rejected 6400, at or below the accepted 6521.
+    assert 6400 < floor <= 6521
+    # And genuinely over the power floor.
+    assert floor * 232 / 1000 >= 1500
+
+
+def test_minimum_rises_as_voltage_falls() -> None:
+    """Same power, less voltage, more current."""
+    low = payload.min_charging_current({"lastACVoltageL1": 220})
+    high = payload.min_charging_current({"lastACVoltageL1": 245})
+    assert low > high
+
+
+def test_minimum_is_selectable_on_the_slider() -> None:
+    """A floor between steps would be unreachable in the UI."""
+    for volts in (220, 230, 232, 240, 250):
+        floor = payload.min_charging_current({"lastACVoltageL1": volts})
+        assert floor % payload.CURRENT_STEP_MA == 0
+
+
+def test_minimum_never_below_the_evse_floor() -> None:
+    """Three phase arithmetic gives a tiny current; 6 A still applies."""
+    data = {"lastACVoltageL1": 232, "evseIsThreePhase": True}
+    assert payload.min_charging_current(data) == 6000
+
+
+def test_voltage_falls_back_when_unreported() -> None:
+    """A single-phase charger reads near zero on L2 and L3."""
+    assert payload.supply_voltage({}) == 230
+    assert payload.supply_voltage({"lastACVoltageL1": 7}) == 230
+    assert payload.supply_voltage({"lastACVoltageL1": 232}) == 232
+
+
+def test_measured_boundary_is_reproduced() -> None:
+    """Guard the whole rule against the captured measurement."""
+    data = {"lastACVoltageL1": 232}
+    floor = payload.min_charging_current(data)
+
+    rejected = (6000, 6400)
+    accepted = (6521, 8000, 32000)
+
+    for value in rejected:
+        assert value < floor, value
+    for value in accepted:
+        assert value >= floor, value
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

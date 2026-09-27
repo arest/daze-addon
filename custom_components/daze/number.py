@@ -22,7 +22,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .api import ApiAuthError, ApiCommandRejectedError, ApiError
 from .const import DOMAIN
 from .coordinator import DazeDataUpdateCoordinator
-from .payload import max_charging_current
+from .payload import max_charging_current, min_charging_current
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -31,10 +31,10 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Industry minimum for EVSE charging current. The maximum is not a
-# constant: it depends on the installation and on any grid power cap,
-# so it is read from the charger. See max_charging_current.
-NATIVE_MIN_VALUE = 6000  # 6 A
+# Neither bound is a constant. The minimum follows the charger's
+# power floor and the supply voltage, and the maximum follows the
+# installation rating. See min_charging_current and
+# max_charging_current.
 NATIVE_MAX_VALUE = 32000  # 32 A, used only until the charger reports
 NATIVE_STEP = 100  # 0.1 A increments
 
@@ -46,7 +46,6 @@ class DazeWallboxNumberEntity(
 
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.CONFIG
-    _attr_native_min_value = NATIVE_MIN_VALUE
     _attr_native_step = NATIVE_STEP
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.MILLIAMPERE
 
@@ -71,6 +70,17 @@ class DazeWallboxNumberEntity(
         self._serial_number = serial_number
         self._attr_unique_id = f"{serial_number}_max_charging_current"
         self._attr_device_info = device_info
+
+    @property
+    def native_min_value(self) -> float:
+        """Return the lowest current the charger will accept.
+
+        The charger enforces a minimum power rather than a minimum
+        current, so this moves with the supply voltage. Offering the
+        6 A industry minimum made the bottom of the slider fail with
+        MaxExternalChargingCurrentOutOfRange on a 1.5 kW floor.
+        """
+        return float(min_charging_current(self.coordinator.data))
 
     @property
     def native_max_value(self) -> float:
@@ -148,8 +158,9 @@ class DazeWallboxNumberEntity(
                 err,
             )
             self._notify_error(
-                f"{err} The highest value this charger currently "
-                f"accepts is {max_charging_current(self.coordinator.data)} mA."
+                f"{err} This charger currently accepts "
+                f"{min_charging_current(self.coordinator.data)} to "
+                f"{max_charging_current(self.coordinator.data)} mA."
             )
         except ApiError as err:
             _LOGGER.warning(

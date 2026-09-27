@@ -21,6 +21,7 @@ directly.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 # EVSE state values confirmed against live hardware:
@@ -237,8 +238,30 @@ def resolve_optimistic(
 # is 6.5 to 32 A, matching a reported 32000.
 CURRENT_LIMIT_FIELDS = ("lastMaxInstallationCurrent",)
 
-# Industry minimum for EVSE charging current.
-MIN_CHARGING_CURRENT_MA = 6000
+# The charger's floor is a power figure, not a current.
+#
+# Measured on a 1.5 to 7.4 kW single-phase unit at 232 V:
+#
+#     6000 mA = 1392 W  rejected
+#     6400 mA = 1485 W  rejected
+#     6521 mA = 1513 W  accepted
+#    32000 mA = 7424 W  accepted
+#
+# The boundary sits at 1500 W, so the minimum current depends on the
+# supply voltage and cannot be a constant. Offering the 6 A industry
+# minimum made the bottom of the slider always fail with
+# MaxExternalChargingCurrentOutOfRange.
+MIN_CHARGING_POWER_W = 1500
+
+# No EVSE charges below 6 A regardless of what the arithmetic says.
+ABSOLUTE_MIN_CHARGING_CURRENT_MA = 6000
+
+# The entity steps in 0.1 A, so the computed floor is rounded up to a
+# step the user can actually select.
+CURRENT_STEP_MA = 100
+
+# Used when the charger reports no usable voltage reading.
+NOMINAL_VOLTAGE = 230
 
 # Fallback ceiling when the charger reports nothing usable.
 FALLBACK_MAX_CHARGING_CURRENT_MA = 32000
@@ -275,4 +298,53 @@ def max_charging_current(data: dict[str, Any] | None) -> int:
     if not candidates:
         return FALLBACK_MAX_CHARGING_CURRENT_MA
 
-    return max(int(min(candidates)), MIN_CHARGING_CURRENT_MA)
+    return max(int(min(candidates)), ABSOLUTE_MIN_CHARGING_CURRENT_MA)
+
+
+def supply_voltage(data: dict[str, Any] | None) -> int:
+    """Return the measured supply voltage, or the nominal value.
+
+    Only L1 is consulted: on a single-phase charger the other two read
+    near zero, which would drag an average down to nonsense.
+
+    Args:
+        data: The merged payload, or None.
+
+    Returns:
+        A voltage in volts.
+
+    """
+    if not data:
+        return NOMINAL_VOLTAGE
+
+    reading = data.get("lastACVoltageL1")
+    if isinstance(reading, (int, float)) and reading > 100:
+        return int(reading)
+
+    return NOMINAL_VOLTAGE
+
+
+def min_charging_current(data: dict[str, Any] | None) -> int:
+    """Return the lowest charging current the charger will accept.
+
+    The charger enforces a minimum power, not a minimum current, so
+    the answer moves with the supply voltage. The result is rounded up
+    to a selectable step, and never falls below the 6 A floor that
+    applies to any EVSE.
+
+    Args:
+        data: The merged payload, or None before the first poll.
+
+    Returns:
+        A current in milliamps.
+
+    """
+    volts = supply_voltage(data)
+    phases = 3 if (data or {}).get("evseIsThreePhase") else 1
+
+    required_ma = MIN_CHARGING_POWER_W / (volts * phases) * 1000
+
+    # Round up: rounding down would land back under the power floor.
+    stepped = math.ceil(required_ma / CURRENT_STEP_MA) * CURRENT_STEP_MA
+
+    return max(ABSOLUTE_MIN_CHARGING_CURRENT_MA, int(stepped))
