@@ -387,7 +387,7 @@ def test_commands_still_send_the_serial_without_a_session() -> None:
 
     asyncio.run(api_client.async_start_charge("SER1", None))
 
-    assert session.calls[0]["json"] == {"evseSerialNumber": "SER1"}
+    assert session.calls[-1]["json"] == {"evseSerialNumber": "SER1"}
 
 
 
@@ -457,7 +457,9 @@ def test_retry_gives_up_and_says_it_is_temporary() -> None:
 
 def test_wrong_session_is_not_retried() -> None:
     """4121 is deterministic. Retrying it only wastes time."""
-    session = FakeSession([FakeResponse(422, WRONG_SESSION)])
+    session = FakeSession(
+        [FakeResponse(200, NO_SESSION), FakeResponse(422, WRONG_SESSION)]
+    )
     client = auth.DazeAuthClient("tok-123", "refresh-123")
     api_client = api.DazeApiClient(client, session)
 
@@ -466,7 +468,8 @@ def test_wrong_session_is_not_retried() -> None:
     except api.ApiCommandRejectedError as err:
         assert err.code == 4121
         assert "no paused charging session" in str(err)
-        assert len(session.calls) == 1
+        # One lookup plus one command: the rejection is not retried.
+        assert len(session.calls) == 2
     else:
         raise AssertionError("expected ApiCommandRejectedError")
 
@@ -591,6 +594,70 @@ def test_give_up_message_states_the_duration_and_blames_the_service() -> None:
         assert "rather than in the charger or the car" in message
     else:
         raise AssertionError("expected ApiCommandRejectedError")
+
+
+
+REMOTE_WITH_SESSION = {
+    "data": {
+        "evseState": 6,
+        "isPaused": True,
+        "chargeSession": {"sessionId": 1790543468000},
+    }
+}
+
+
+def test_command_reads_a_fresh_session_id_when_not_given_one() -> None:
+    """A cached ID can name a session that has already ended.
+
+    Session IDs change whenever one session closes and another opens.
+    The coordinator's copy is up to a poll interval old, so the command
+    re-reads it rather than trusting that.
+    """
+    session = FakeSession(
+        [
+            FakeResponse(200, REMOTE_WITH_SESSION),
+            FakeResponse(200, COMMAND_OK),
+        ]
+    )
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    asyncio.run(api_client.async_start_charge("SER1"))
+
+    assert len(session.calls) == 2
+    assert "remoteInfo" in session.calls[0]["url"]
+    assert session.calls[1]["json"] == {
+        "evseSerialNumber": "SER1",
+        "sessionId": 1790543468000,
+    }
+
+
+def test_explicit_session_id_skips_the_extra_read() -> None:
+    """Passing an ID is an override, used by tests and the tools."""
+    session = FakeSession([FakeResponse(200, COMMAND_OK)])
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    asyncio.run(api_client.async_start_charge("SER1", 42))
+
+    assert len(session.calls) == 1
+    assert session.calls[0]["json"]["sessionId"] == 42
+
+
+def test_command_proceeds_when_the_session_read_fails() -> None:
+    """A failed lookup must not block the command entirely."""
+    session = FakeSession(
+        [
+            FakeResponse(500, {"message": "boom"}),
+            FakeResponse(200, COMMAND_OK),
+        ]
+    )
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    asyncio.run(api_client.async_stop_charge("SER1"))
+
+    assert session.calls[-1]["json"] == {"evseSerialNumber": "SER1"}
 
 
 def _main() -> int:

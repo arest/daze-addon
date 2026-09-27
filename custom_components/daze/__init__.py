@@ -131,22 +131,10 @@ def _async_register_services(
     api_client = coordinator.api_client
     serial_number = coordinator.serial_number
 
-    def _session_id() -> int | None:
-        """Return the open charge session ID, if any.
-
-        The play and stop commands act on a session and must name
-        it, or the API answers 422 ErrorWrongSessionID.
-        """
-        data = coordinator.data or {}
-        session_id = data.get("sessionId")
-        return session_id if isinstance(session_id, int) else None
-
     async def _handle_start_charge(call: ServiceCall) -> None:
         """Start charging."""
         try:
-            await api_client.async_start_charge(
-                serial_number, _session_id()
-            )
+            await api_client.async_start_charge(serial_number)
             await coordinator.async_request_refresh()
             coordinator.async_schedule_settle_refresh()
         except ApiAuthError as err:
@@ -162,9 +150,7 @@ def _async_register_services(
     async def _handle_stop_charge(call: ServiceCall) -> None:
         """Stop charging."""
         try:
-            await api_client.async_stop_charge(
-                serial_number, _session_id()
-            )
+            await api_client.async_stop_charge(serial_number)
             await coordinator.async_request_refresh()
             coordinator.async_schedule_settle_refresh()
         except ApiAuthError as err:

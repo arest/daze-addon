@@ -644,6 +644,34 @@ class DazeApiClient:
             code=code,
         ) from last_error
 
+    async def _current_session_id(self, serial: str) -> int | None:
+        """Read the open session ID straight from the charger.
+
+        The coordinator's copy can be up to one poll interval old, and
+        the session ID changes whenever a session ends and another
+        begins. Naming a stale session makes the command fail, so the
+        commands re-read it rather than trusting the cache.
+
+        Args:
+            serial: The serial number of the wallbox.
+
+        Returns:
+            The current session ID, or None if no session is open or
+            the read failed.
+
+        """
+        try:
+            data = await self.async_get_socket_remote_info(serial)
+        except ApiError as err:
+            _LOGGER.debug("Could not read the current session ID: %s", err)
+            return None
+
+        session = data.get("chargeSession")
+        session_id = (
+            session.get("sessionId") if isinstance(session, dict) else None
+        )
+        return session_id if isinstance(session_id, int) else None
+
     async def async_start_charge(
         self, serial: str, session_id: int | None = None
     ) -> dict[str, Any]:
@@ -666,13 +694,17 @@ class DazeApiClient:
 
         Args:
             serial: The serial number of the wallbox.
-            session_id: The session to resume. Omitted when unknown,
-                which the API rejects with 422.
+            session_id: The session to resume. When omitted it is read
+                from the charger, which is what callers should do: a
+                cached ID may name a session that has since ended.
 
         Returns:
             The response dict.
 
         """
+        if session_id is None:
+            session_id = await self._current_session_id(serial)
+
         url = f"{API_BASE_URL}/sockets/{serial}/commands/playcharge"
         payload: dict[str, Any] = {"evseSerialNumber": serial}
         if session_id is not None:
@@ -698,6 +730,9 @@ class DazeApiClient:
             The response dict.
 
         """
+        if session_id is None:
+            session_id = await self._current_session_id(serial)
+
         url = f"{API_BASE_URL}/sockets/{serial}/commands/stopcharge"
         payload: dict[str, Any] = {"evseSerialNumber": serial}
         if session_id is not None:
