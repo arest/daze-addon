@@ -66,12 +66,43 @@ _SCHEDULED_CHARGE_KEYS: tuple[str, ...] = (
 )
 
 
+# Fields a schedule object might carry the start time under. The
+# charger reported nextScheduleInfo as null whenever it was observed,
+# so the shape is unconfirmed and every candidate is tried.
+_SCHEDULE_TIME_FIELDS = (
+    "startTime",
+    "start",
+    "scheduledStart",
+    "nextStart",
+    "time",
+)
+
+
 def get_next_scheduled_charge(data: dict[str, Any]) -> Any | None:
-    """Return the first present schedule timestamp field."""
+    """Return the next scheduled charge time, if one is set.
+
+    nextScheduleInfo arrives as an object rather than a timestamp, and
+    merge_payload preserves it as one. Handing that object to a
+    timestamp sensor makes Home Assistant reject every state write with
+    "Invalid datetime", so the timestamp is extracted from it and
+    anything that is not a scalar is discarded.
+    """
     for key in _SCHEDULED_CHARGE_KEYS:
         value = data.get(key)
-        if value is not None:
+
+        if value is None:
+            continue
+
+        if isinstance(value, dict):
+            for field in _SCHEDULE_TIME_FIELDS:
+                nested = value.get(field)
+                if isinstance(nested, (str, int, float)):
+                    return nested
+            continue
+
+        if isinstance(value, (str, int, float)):
             return value
+
     return None
 
 

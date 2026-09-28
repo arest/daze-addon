@@ -768,6 +768,33 @@ def test_grid_cap_advice_only_fires_above_the_cap() -> None:
     assert "3000 W" in advice
 
 
+
+def test_schedule_object_does_not_reach_the_timestamp_sensor() -> None:
+    """nextScheduleInfo is an object, not a timestamp.
+
+    merge_payload preserves it as one, and a timestamp sensor rejects
+    a dict with "Invalid datetime" on every state write.
+    """
+    with_schedule = payload.merge_payload(
+        {"nextScheduleInfo": {"startTime": "2026-09-28T02:00:00Z"}}, None
+    )
+    value = catalog.get_next_scheduled_charge(with_schedule)
+    assert value == "2026-09-28T02:00:00Z"
+    assert not isinstance(value, dict)
+
+
+def test_unknown_schedule_shape_yields_nothing() -> None:
+    """An object with no recognised time field must not be published."""
+    data = payload.merge_payload({"nextScheduleInfo": {"foo": "bar"}}, None)
+    assert catalog.get_next_scheduled_charge(data) is None
+
+
+def test_absent_schedule_yields_nothing() -> None:
+    """The charger reports null whenever nothing is scheduled."""
+    data = payload.merge_payload({"nextScheduleInfo": None}, None)
+    assert catalog.get_next_scheduled_charge(data) is None
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

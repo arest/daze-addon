@@ -66,6 +66,12 @@ POST_COMMAND_REFRESH_DELAY = 10  # seconds
 # user waiting on any of it.
 BACKGROUND_RETRY_DELAYS = (15, 30, 60, 120, 240)
 
+# An optimistic value waiting on a background retry is held past
+# the usual timeout, but not forever: if the retry chain is
+# superseded its callbacks never fire, and without this cap the
+# entity would show a stale request until Home Assistant restarts.
+MAX_OPTIMISTIC_HOLD = sum(BACKGROUND_RETRY_DELAYS) + 60
+
 # Attempts made while the user waits, before handing off to the
 # background. Kept short: a healthy link answers on the first try.
 INLINE_COMMAND_ATTEMPTS = 3

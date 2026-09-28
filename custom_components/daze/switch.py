@@ -30,6 +30,7 @@ from .api import (
 from .const import (
     DOMAIN,
     INLINE_COMMAND_ATTEMPTS,
+    MAX_OPTIMISTIC_HOLD,
     OPTIMISTIC_STATE_TIMEOUT,
     POST_COMMAND_REFRESH_DELAY,
 )
@@ -76,6 +77,7 @@ class DazeWallboxSwitchEntity(
         self._attr_device_info = device_info
         self._optimistic_state: bool | None = None
         self._optimistic_since: float = 0.0
+        self._awaiting_retry: bool = False
 
     @property
     def is_on(self) -> bool | None:
@@ -109,7 +111,14 @@ class DazeWallboxSwitchEntity(
         """Whether the optimistic value has been held too long."""
         if self._optimistic_state is None:
             return True
+
         held = time.monotonic() - self._optimistic_since
+
+        if self._awaiting_retry:
+            # A queued retry means the request is still outstanding.
+            # Capped, because a superseded chain never reports back.
+            return held > MAX_OPTIMISTIC_HOLD
+
         return held > OPTIMISTIC_STATE_TIMEOUT
 
     @property
@@ -117,7 +126,9 @@ class DazeWallboxSwitchEntity(
         """Tell the frontend when the shown state is a guess."""
         return self._optimistic_state is not None
 
-    def _set_optimistic(self, value: bool) -> None:
+    def _set_optimistic(
+        self, value: bool, awaiting_retry: bool = False
+    ) -> None:
         """Show the commanded state now and re-read the charger later.
 
         Refreshing immediately is worse than not refreshing at all: the
@@ -126,6 +137,7 @@ class DazeWallboxSwitchEntity(
         """
         self._optimistic_state = value
         self._optimistic_since = time.monotonic()
+        self._awaiting_retry = awaiting_retry
         self.async_write_ha_state()
         self.coordinator.async_schedule_refresh_in(
             POST_COMMAND_REFRESH_DELAY
@@ -142,6 +154,7 @@ class DazeWallboxSwitchEntity(
             )
             if actual == self._optimistic_state or self._optimistic_expired:
                 self._optimistic_state = None
+                self._awaiting_retry = False
 
         super()._handle_coordinator_update()
 
@@ -162,6 +175,11 @@ class DazeWallboxSwitchEntity(
             # The coordinator's copy can name a session that has ended.
             await self._api_client.async_start_charge(
                 self._serial_number, attempts=INLINE_COMMAND_ATTEMPTS
+            )
+            # Supersede any queued retry, or it would re-apply the
+            # opposite command minutes from now.
+            self.coordinator.async_cancel_background_retry(
+                f"{self._serial_number}:charge"
             )
             self._set_optimistic(True)
         except ApiAuthError as err:
@@ -210,6 +228,9 @@ class DazeWallboxSwitchEntity(
             )
             await self._api_client.async_stop_charge(
                 self._serial_number, attempts=INLINE_COMMAND_ATTEMPTS
+            )
+            self.coordinator.async_cancel_background_retry(
+                f"{self._serial_number}:charge"
             )
             self._set_optimistic(False)
         except ApiAuthError as err:
@@ -275,7 +296,7 @@ class DazeWallboxSwitchEntity(
         )
 
         # Show the intent while the retries run.
-        self._set_optimistic(turn_on)
+        self._set_optimistic(turn_on, awaiting_retry=True)
         return True
 
     def _notify_error(self, message: str) -> None:

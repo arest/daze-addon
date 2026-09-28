@@ -30,6 +30,7 @@ from .api import (
 from .const import (
     DOMAIN,
     INLINE_COMMAND_ATTEMPTS,
+    MAX_OPTIMISTIC_HOLD,
     OPTIMISTIC_STATE_TIMEOUT,
     POST_COMMAND_REFRESH_DELAY,
 )
@@ -144,12 +145,13 @@ class DazeWallboxSelectEntity(
         """Whether a pending change has been shown for too long."""
         if self._optimistic_option is None:
             return True
+        held = time.monotonic() - self._optimistic_since
+
         if self._awaiting_retry:
-            return False
-        return (
-            time.monotonic() - self._optimistic_since
-            > OPTIMISTIC_STATE_TIMEOUT
-        )
+            # Capped: a superseded retry chain never reports back, so
+            # without this the value would stick until a restart.
+            return held > MAX_OPTIMISTIC_HOLD
+        return held > OPTIMISTIC_STATE_TIMEOUT
 
     def _show_requested(self, option: str, awaiting_retry: bool) -> None:
         """Display a requested mode and re-read the charger later."""
@@ -218,6 +220,9 @@ class DazeWallboxSelectEntity(
                 self._serial_number,
                 eco_value,
                 attempts=INLINE_COMMAND_ATTEMPTS,
+            )
+            self.coordinator.async_cancel_background_retry(
+                f"{self._serial_number}:mode"
             )
             self._show_requested(option, awaiting_retry=False)
         except ApiAuthError as err:

@@ -34,6 +34,7 @@ from .api import (
 from .const import (
     DOMAIN,
     INLINE_COMMAND_ATTEMPTS,
+    MAX_OPTIMISTIC_HOLD,
     OPTIMISTIC_STATE_TIMEOUT,
     POST_COMMAND_REFRESH_DELAY,
 )
@@ -166,10 +167,13 @@ class DazeWallboxNumberEntity(
 
         # While a background retry is still running the request is
         # genuinely outstanding, so keep showing it.
-        if self._awaiting_retry:
-            return False
-
         held = time.monotonic() - self._optimistic_since
+
+        if self._awaiting_retry:
+            # Capped: a superseded retry chain never reports back, so
+            # without this the value would stick until a restart.
+            return held > MAX_OPTIMISTIC_HOLD
+
         return held > OPTIMISTIC_STATE_TIMEOUT
 
     def _show_requested(self, value: int, awaiting_retry: bool) -> None:
@@ -238,6 +242,9 @@ class DazeWallboxNumberEntity(
                 self._serial_number,
                 int_value,
                 attempts=INLINE_COMMAND_ATTEMPTS,
+            )
+            self.coordinator.async_cancel_background_retry(
+                f"{self._serial_number}:current"
             )
             self._show_requested(int_value, awaiting_retry=False)
         except ApiAuthError as err:
@@ -385,12 +392,13 @@ class DazeWallboxPowerEntity(
         """Whether a pending change has been shown for too long."""
         if self._optimistic_watts is None:
             return True
+
+        held = time.monotonic() - self._optimistic_since
+
         if self._awaiting_retry:
-            return False
-        return (
-            time.monotonic() - self._optimistic_since
-            > OPTIMISTIC_STATE_TIMEOUT
-        )
+            return held > MAX_OPTIMISTIC_HOLD
+
+        return held > OPTIMISTIC_STATE_TIMEOUT
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the limit from a power figure.
@@ -436,6 +444,9 @@ class DazeWallboxPowerEntity(
                 self._serial_number,
                 milliamps,
                 attempts=INLINE_COMMAND_ATTEMPTS,
+            )
+            self.coordinator.async_cancel_background_retry(
+                f"{self._serial_number}:current"
             )
             self._show_requested(watts, awaiting_retry=False)
         except ApiAuthError as err:
@@ -491,9 +502,15 @@ class DazeWallboxPowerEntity(
     @callback
     def _handle_coordinator_update(self) -> None:
         """Stop showing the request once the charger reports it."""
+        reported = self._reported_watts
         if (
             self._optimistic_watts is not None
-            and self._reported_watts == self._optimistic_watts
+            and reported is not None
+            # Compared with tolerance: both sides are derived from the
+            # live voltage, so a 1 V drift between the command and the
+            # next poll changes the figure and exact equality never
+            # holds.
+            and abs(reported - self._optimistic_watts) <= POWER_STEP_W
         ):
             self._optimistic_watts = None
             self._awaiting_retry = False

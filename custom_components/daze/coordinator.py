@@ -49,6 +49,10 @@ SESSION_FETCH_INTERVAL = 300  # seconds
 # of retrying every poll and filling the log with warnings.
 SESSION_MISSING_RETRY_INTERVAL = 3600  # seconds
 
+# After a transient failure, try again sooner than the normal
+# interval but not on every poll.
+SESSION_ERROR_RETRY_INTERVAL = 60  # seconds
+
 # The charger record holds configuration and slow-moving readings,
 # so it does not need the live metric cadence.
 EVSE_FETCH_INTERVAL = 120  # seconds
@@ -259,6 +263,11 @@ class DazeDataUpdateCoordinator(
         Scheduled, not awaited: the caller returns immediately.
         """
 
+        # The charging current and eco mode live only in the EVSE
+        # record, which is cached. Without dropping that cache the
+        # refresh re-reads a stale copy and the entity reverts.
+        self._next_evse_fetch = 0.0
+
         async def _refresh(_now: Any) -> None:
             """Ask the coordinator to re-read the charger."""
             _LOGGER.debug(
@@ -266,6 +275,7 @@ class DazeDataUpdateCoordinator(
                 self._serial_number,
                 delay,
             )
+            self._next_evse_fetch = 0.0
             await self.async_request_refresh()
 
         async_call_later(self.hass, delay, _refresh)
@@ -280,6 +290,8 @@ class DazeDataUpdateCoordinator(
 
         Scheduled, not awaited: the caller returns immediately.
         """
+        self._next_evse_fetch = 0.0
+
         for delay in SETTLE_REFRESH_DELAYS:
 
             async def _refresh(_now: Any, _delay: int = delay) -> None:
@@ -289,6 +301,7 @@ class DazeDataUpdateCoordinator(
                     self._serial_number,
                     _delay,
                 )
+                self._next_evse_fetch = 0.0
                 await self.async_request_refresh()
 
             async_call_later(self.hass, delay, _refresh)
@@ -376,7 +389,9 @@ class DazeDataUpdateCoordinator(
         # Fetch session data (secondary — failures are non-fatal).
         # Throttled: history only changes when a charge ends.
         if time.time() >= self._next_session_fetch:
-            self._cached_sessions = await self._async_fetch_sessions()
+            fetched = await self._async_fetch_sessions()
+            if fetched is not None:
+                self._cached_sessions = fetched
 
         sessions = self._cached_sessions
         data["sessions"] = sessions
@@ -441,19 +456,19 @@ class DazeDataUpdateCoordinator(
 
     async def _async_fetch_sessions(
         self,
-    ) -> list[RechargeSession]:
+    ) -> list[RechargeSession] | None:
         """Fetch recharge session history.
 
-        Failures are logged and return an empty list — the coordinator
-        continues to work with live socket data even if sessions are
-        temporarily unavailable.
+        Returns None on failure rather than an empty list. An empty
+        list is a real answer meaning "no sessions", and assigning it
+        over a good history resets lifetime_energy to zero. That sensor
+        is total_increasing, so Home Assistant reads the drop as a
+        meter reset and double counts on recovery.
 
         Returns:
-            A list of RechargeSession objects (may be empty).
+            The sessions, or None if they could not be fetched.
 
         """
-        self._next_session_fetch = time.time() + SESSION_FETCH_INTERVAL
-
         try:
             sessions_raw = (
                 await self._api_client.async_get_recharge_sessions(
@@ -466,6 +481,9 @@ class DazeDataUpdateCoordinator(
                 self._network_uid,
             )
             self._sessions_missing_logged = False
+            # Armed only on success: arming first meant a transient
+            # error silently froze the history for five minutes.
+            self._next_session_fetch = time.time() + SESSION_FETCH_INTERVAL
             return [
                 RechargeSession.from_dict(s) for s in sessions_raw
             ]
@@ -487,6 +505,8 @@ class DazeDataUpdateCoordinator(
                     self._network_uid,
                 )
 
+            # A missing endpoint genuinely means no history, unlike a
+            # transient error, so an empty list is the right answer.
             return []
 
         except ApiAuthError:
@@ -494,27 +514,36 @@ class DazeDataUpdateCoordinator(
             # socket fetch already validated the token), but handle
             # gracefully — don't double-trigger re-auth.
             _LOGGER.warning(
-                "Auth error fetching sessions for %s — sessions "
-                "unavailable until next poll",
+                "Auth error fetching sessions for %s — keeping the "
+                "previous history",
                 self._serial_number,
             )
-            return []
+            self._next_session_fetch = (
+                time.time() + SESSION_ERROR_RETRY_INTERVAL
+            )
+            return None
 
         except ApiError as err:
             _LOGGER.warning(
-                "API error fetching sessions for %s: %s — "
-                "sessions unavailable until next poll",
+                "API error fetching sessions for %s: %s — keeping the "
+                "previous history",
                 self._serial_number,
                 err,
             )
-            return []
+            self._next_session_fetch = (
+                time.time() + SESSION_ERROR_RETRY_INTERVAL
+            )
+            return None
 
         except Exception:
             _LOGGER.exception(
                 "Unexpected error fetching sessions for %s",
                 self._serial_number,
             )
-            return []
+            self._next_session_fetch = (
+                time.time() + SESSION_ERROR_RETRY_INTERVAL
+            )
+            return None
 
 
 async def async_setup_coordinator(
