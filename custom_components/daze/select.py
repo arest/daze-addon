@@ -19,8 +19,13 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import ApiAuthError, ApiError
-from .const import DOMAIN
+from .api import (
+    COMMAND_ERROR_CODE_RPC_FAILURE,
+    ApiAuthError,
+    ApiCommandRejectedError,
+    ApiError,
+)
+from .const import DOMAIN, INLINE_COMMAND_ATTEMPTS
 from .coordinator import DazeDataUpdateCoordinator
 
 if TYPE_CHECKING:
@@ -142,7 +147,9 @@ class DazeWallboxSelectEntity(
                 eco_value,
             )
             await self._api_client.async_set_eco_mode(
-                self._serial_number, eco_value
+                self._serial_number,
+                eco_value,
+                attempts=INLINE_COMMAND_ATTEMPTS,
             )
             await self.coordinator.async_request_refresh()
             self.coordinator.async_schedule_settle_refresh()
@@ -156,6 +163,26 @@ class DazeWallboxSelectEntity(
                 "Authentication failed when trying to change the "
                 "operation mode. Please re-authenticate the integration."
             )
+        except ApiCommandRejectedError as err:
+            if err.code == COMMAND_ERROR_CODE_RPC_FAILURE:
+                self.coordinator.async_retry_in_background(
+                    key=f"{self._serial_number}:mode",
+                    action=lambda: self._api_client.async_set_eco_mode(
+                        self._serial_number,
+                        eco_value,
+                        attempts=INLINE_COMMAND_ATTEMPTS,
+                    ),
+                    description=f"Setting the operation mode to {option}",
+                    on_failure=self._notify_error,
+                )
+                return
+
+            _LOGGER.info(
+                "Charger refused the mode change on %s: %s",
+                self._serial_number,
+                err,
+            )
+            self._notify_error(str(err))
         except ApiError as err:
             _LOGGER.warning(
                 "API error setting operation mode on %s: %s",

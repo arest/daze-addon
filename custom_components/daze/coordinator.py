@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -20,6 +21,7 @@ from homeassistant.helpers.update_coordinator import (
 from .api import ApiAuthError, ApiError, ApiNotFoundError, DazeApiClient
 from .api.auth import DazeAuthClient
 from .const import (
+    BACKGROUND_RETRY_DELAYS,
     CONF_ACCESS_TOKEN,
     CONF_NETWORK_UID,
     CONF_POLL_INTERVAL,
@@ -103,6 +105,7 @@ class DazeDataUpdateCoordinator(
         self._next_evse_fetch: float = 0.0
         self._next_session_fetch: float = 0.0
         self._sessions_missing_logged: bool = False
+        self._pending_retries: dict[str, Callable[[], None]] = {}
 
         super().__init__(
             hass,
@@ -145,6 +148,106 @@ class DazeDataUpdateCoordinator(
     def network_uid(self) -> str:
         """Return the network UID."""
         return self._network_uid
+
+    def async_retry_in_background(
+        self,
+        key: str,
+        action: Callable[[], Awaitable[Any]],
+        description: str,
+        on_failure: Callable[[str], None] | None = None,
+    ) -> None:
+        """Keep retrying a command after the user has stopped waiting.
+
+        The Daze RPC link refuses commands for minutes at a time. Held
+        open, that means a service call that blocks and then fails.
+        Retried in the background, the command usually lands and the
+        user never sees a failure at all.
+
+        A second request for the same key replaces the first, so
+        repeatedly nudging a control does not stack up retries.
+
+        Args:
+            key: Identifies the command, so a newer one supersedes it.
+            action: Awaitable performing the command. Raising means
+                the attempt failed.
+            description: Used in log messages and the failure notice.
+            on_failure: Called with a message when every attempt fails.
+
+        """
+        self.async_cancel_background_retry(key)
+
+        attempts = list(BACKGROUND_RETRY_DELAYS)
+        state = {"index": 0, "cancelled": False}
+
+        async def _attempt(_now: Any) -> None:
+            """Run one background attempt and schedule the next."""
+            if state["cancelled"]:
+                return
+
+            index = state["index"]
+            try:
+                await action()
+            except Exception as err:  # noqa: BLE001 - reported below
+                state["index"] = index + 1
+
+                if state["index"] < len(attempts):
+                    delay = attempts[state["index"]]
+                    _LOGGER.debug(
+                        "Background retry %d/%d for %s failed (%s), "
+                        "next in %ss",
+                        index + 1,
+                        len(attempts),
+                        description,
+                        err,
+                        delay,
+                    )
+                    _schedule(delay)
+                    return
+
+                self._pending_retries.pop(key, None)
+                _LOGGER.warning(
+                    "%s never succeeded after %d background attempts: %s",
+                    description,
+                    len(attempts),
+                    err,
+                )
+                if on_failure is not None:
+                    on_failure(
+                        f"{description} could not be delivered to the "
+                        f"charger. The Daze service was unreachable for "
+                        f"several minutes."
+                    )
+                return
+
+            self._pending_retries.pop(key, None)
+            _LOGGER.info(
+                "%s succeeded on background attempt %d", description, index + 1
+            )
+            await self.async_request_refresh()
+
+        def _schedule(delay: int) -> None:
+            """Queue the next attempt and remember how to cancel it."""
+            cancel = async_call_later(self.hass, delay, _attempt)
+
+            def _cancel() -> None:
+                state["cancelled"] = True
+                cancel()
+
+            self._pending_retries[key] = _cancel
+
+        _LOGGER.info(
+            "%s did not reach the charger; retrying in the background "
+            "over the next %d seconds",
+            description,
+            sum(attempts),
+        )
+        _schedule(attempts[0])
+
+    def async_cancel_background_retry(self, key: str) -> None:
+        """Drop any pending background retry for a command."""
+        cancel = self._pending_retries.pop(key, None)
+        if cancel is not None:
+            cancel()
 
     def async_schedule_refresh_in(self, delay: int) -> None:
         """Re-read the charger once, after a delay.

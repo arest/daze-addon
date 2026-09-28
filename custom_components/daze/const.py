@@ -56,6 +56,20 @@ OPTIMISTIC_STATE_TIMEOUT = 20  # seconds
 # state back and makes the toggle appear to flip back.
 POST_COMMAND_REFRESH_DELAY = 10  # seconds
 
+# A command that the Daze RPC link refuses is retried in the
+# background rather than held open. Blocking eight attempts across 33
+# seconds still failed, and holding a service call longer than that is
+# not reasonable.
+#
+# These offsets spread further attempts over roughly seven and a half
+# minutes, which covers an outage of the length observed without the
+# user waiting on any of it.
+BACKGROUND_RETRY_DELAYS = (15, 30, 60, 120, 240)
+
+# Attempts made while the user waits, before handing off to the
+# background. Kept short: a healthy link answers on the first try.
+INLINE_COMMAND_ATTEMPTS = 3
+
 DEFAULT_TOKEN_EXPIRY_BUFFER = 60  # seconds
 
 # Platform list

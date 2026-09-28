@@ -21,9 +21,15 @@ from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import ApiAuthError, ApiCommandRejectedError, ApiError
+from .api import (
+    COMMAND_ERROR_CODE_RPC_FAILURE,
+    ApiAuthError,
+    ApiCommandRejectedError,
+    ApiError,
+)
 from .const import (
     DOMAIN,
+    INLINE_COMMAND_ATTEMPTS,
     OPTIMISTIC_STATE_TIMEOUT,
     POST_COMMAND_REFRESH_DELAY,
 )
@@ -154,7 +160,9 @@ class DazeWallboxSwitchEntity(
             )
             # No session ID passed: the client reads a current one.
             # The coordinator's copy can name a session that has ended.
-            await self._api_client.async_start_charge(self._serial_number)
+            await self._api_client.async_start_charge(
+                self._serial_number, attempts=INLINE_COMMAND_ATTEMPTS
+            )
             self._set_optimistic(True)
         except ApiAuthError as err:
             _LOGGER.warning(
@@ -167,8 +175,8 @@ class DazeWallboxSwitchEntity(
                 "Please re-authenticate the integration."
             )
         except ApiCommandRejectedError as err:
-            # The charger explained why; relay that rather
-            # than the stock 'check the car is connected'.
+            if self._retry_in_background(err, True):
+                return
             _LOGGER.info(
                 "Charger refused the command on %s: %s",
                 self._serial_number,
@@ -200,7 +208,9 @@ class DazeWallboxSwitchEntity(
             _LOGGER.info(
                 "Stopping charge on wallbox %s", self._serial_number
             )
-            await self._api_client.async_stop_charge(self._serial_number)
+            await self._api_client.async_stop_charge(
+                self._serial_number, attempts=INLINE_COMMAND_ATTEMPTS
+            )
             self._set_optimistic(False)
         except ApiAuthError as err:
             _LOGGER.warning(
@@ -213,8 +223,8 @@ class DazeWallboxSwitchEntity(
                 "Please re-authenticate the integration."
             )
         except ApiCommandRejectedError as err:
-            # The charger explained why; relay that rather
-            # than the stock 'check the car is connected'.
+            if self._retry_in_background(err, False):
+                return
             _LOGGER.info(
                 "Charger refused the command on %s: %s",
                 self._serial_number,
@@ -231,6 +241,42 @@ class DazeWallboxSwitchEntity(
                 "Failed to stop charging. "
                 f"Error: {err}"
             )
+
+    def _retry_in_background(
+        self, err: ApiCommandRejectedError, turn_on: bool
+    ) -> bool:
+        """Queue a retry when the charger was unreachable.
+
+        A refusal is final and should be shown. An unreachable RPC
+        link is not: the same command usually lands a minute later,
+        so it is retried without troubling the user.
+
+        Returns:
+            True if the command was handed to the background.
+
+        """
+        if err.code != COMMAND_ERROR_CODE_RPC_FAILURE:
+            return False
+
+        verb = "Starting" if turn_on else "Stopping"
+        command = (
+            self._api_client.async_start_charge
+            if turn_on
+            else self._api_client.async_stop_charge
+        )
+
+        self.coordinator.async_retry_in_background(
+            key=f"{self._serial_number}:charge",
+            action=lambda: command(
+                self._serial_number, attempts=INLINE_COMMAND_ATTEMPTS
+            ),
+            description=f"{verb} the charge",
+            on_failure=self._notify_error,
+        )
+
+        # Show the intent while the retries run.
+        self._set_optimistic(turn_on)
+        return True
 
     def _notify_error(self, message: str) -> None:
         """Show a persistent notification in the HA frontend."""

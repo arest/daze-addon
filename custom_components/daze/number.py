@@ -19,8 +19,13 @@ from homeassistant.const import EntityCategory, UnitOfElectricCurrent
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import ApiAuthError, ApiCommandRejectedError, ApiError
-from .const import DOMAIN
+from .api import (
+    COMMAND_ERROR_CODE_RPC_FAILURE,
+    ApiAuthError,
+    ApiCommandRejectedError,
+    ApiError,
+)
+from .const import DOMAIN, INLINE_COMMAND_ATTEMPTS
 from .coordinator import DazeDataUpdateCoordinator
 from .payload import max_charging_current, min_charging_current
 
@@ -137,7 +142,9 @@ class DazeWallboxNumberEntity(
                 int_value,
             )
             await self._api_client.async_set_max_charging_current(
-                self._serial_number, int_value
+                self._serial_number,
+                int_value,
+                attempts=INLINE_COMMAND_ATTEMPTS,
             )
             await self.coordinator.async_request_refresh()
             self.coordinator.async_schedule_settle_refresh()
@@ -152,6 +159,23 @@ class DazeWallboxNumberEntity(
                 "current. Please re-authenticate the integration."
             )
         except ApiCommandRejectedError as err:
+            if err.code == COMMAND_ERROR_CODE_RPC_FAILURE:
+                # Unreachable rather than refused. Keep trying without
+                # making the user wait or telling them it failed.
+                self.coordinator.async_retry_in_background(
+                    key=f"{self._serial_number}:current",
+                    action=lambda: self._api_client.
+                    async_set_max_charging_current(
+                        self._serial_number,
+                        int_value,
+                        attempts=INLINE_COMMAND_ATTEMPTS,
+                    ),
+                    description=f"Setting the charging current to "
+                    f"{int_value} mA",
+                    on_failure=self._notify_error,
+                )
+                return
+
             _LOGGER.info(
                 "Charger refused the current change on %s: %s",
                 self._serial_number,

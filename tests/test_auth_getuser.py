@@ -717,6 +717,67 @@ def test_current_change_retries_a_transient_failure() -> None:
     assert len(session.calls) == 2
 
 
+
+def test_inline_budget_is_short_enough_to_hand_off() -> None:
+    """The user must not wait 33s before the background takes over.
+
+    Blocking through the full retry budget was tried and still failed;
+    the point of the handoff is that nobody waits for it.
+    """
+    import importlib.util as _iu
+    spec = _iu.spec_from_file_location(
+        "daze_const_qa", PACKAGE_DIR / "const.py"
+    )
+    assert spec and spec.loader
+    const = _iu.module_from_spec(spec)
+    spec.loader.exec_module(const)
+
+    inline_wait = sum(
+        min(api.COMMAND_RETRY_DELAY * n, api.COMMAND_RETRY_MAX_DELAY)
+        for n in range(1, const.INLINE_COMMAND_ATTEMPTS)
+    )
+    assert inline_wait <= 10, inline_wait
+
+    # And the background must cover far longer than the inline path.
+    assert sum(const.BACKGROUND_RETRY_DELAYS) > 300
+
+
+def test_command_attempts_are_caller_controlled() -> None:
+    """Entities shorten the inline budget; the default stays long."""
+    session = FakeSession(
+        [
+            FakeResponse(200, NO_SESSION),
+            FakeResponse(500, RPC_FAILURE),
+            FakeResponse(500, RPC_FAILURE),
+        ]
+    )
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    try:
+        asyncio.run(api_client.async_start_charge("SER1", attempts=2))
+    except api.ApiCommandRejectedError:
+        pass
+
+    # One session lookup plus exactly two command attempts.
+    assert len(session.calls) == 3
+
+
+def test_set_current_accepts_an_attempt_budget() -> None:
+    """The number entity passes a short budget for the same reason."""
+    session = FakeSession(
+        [FakeResponse(500, RPC_FAILURE), FakeResponse(200, COMMAND_OK)]
+    )
+    client = auth.DazeAuthClient("tok-123", "refresh-123")
+    api_client = api.DazeApiClient(client, session)
+
+    asyncio.run(
+        api_client.async_set_max_charging_current("SER1", 8000, attempts=3)
+    )
+
+    assert len(session.calls) == 2
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

@@ -505,7 +505,10 @@ class DazeApiClient:
         return data.get("data", {})
 
     async def async_set_max_charging_current(
-        self, serial: str, current_ma: int
+        self,
+        serial: str,
+        current_ma: int,
+        attempts: int = COMMAND_RETRY_ATTEMPTS,
     ) -> dict[str, Any]:
         """Set the maximum charging current for a wallbox.
 
@@ -527,10 +530,13 @@ class DazeApiClient:
             "evseSerialNumber": serial,
             "maxExternalChargingCurrentInMilliAmps": current_ma,
         }
-        return await self._post_command(url, payload)
+        return await self._post_command(url, payload, attempts=attempts)
 
     async def async_set_eco_mode(
-        self, serial: str, eco_mode_enabled: bool
+        self,
+        serial: str,
+        eco_mode_enabled: bool,
+        attempts: int = COMMAND_RETRY_ATTEMPTS,
     ) -> dict[str, Any]:
         """Enable or disable eco mode on a wallbox.
 
@@ -552,7 +558,7 @@ class DazeApiClient:
             "evseSerialNumber": serial,
             "ecoModeEnabled": eco_mode_enabled,
         }
-        return await self._post_command(url, payload)
+        return await self._post_command(url, payload, attempts=attempts)
 
     async def _post_command(
         self,
@@ -682,7 +688,10 @@ class DazeApiClient:
         return session_id if isinstance(session_id, int) else None
 
     async def async_start_charge(
-        self, serial: str, session_id: int | None = None
+        self,
+        serial: str,
+        session_id: int | None = None,
+        attempts: int = COMMAND_RETRY_ATTEMPTS,
     ) -> dict[str, Any]:
         """Resume charging on a wallbox.
 
@@ -718,10 +727,13 @@ class DazeApiClient:
         payload: dict[str, Any] = {"evseSerialNumber": serial}
         if session_id is not None:
             payload["sessionId"] = session_id
-        return await self._post_command(url, payload)
+        return await self._post_command(url, payload, attempts=attempts)
 
     async def async_stop_charge(
-        self, serial: str, session_id: int | None = None
+        self,
+        serial: str,
+        session_id: int | None = None,
+        attempts: int = COMMAND_RETRY_ATTEMPTS,
     ) -> dict[str, Any]:
         """Suspend charging on a wallbox.
 
@@ -746,7 +758,7 @@ class DazeApiClient:
         payload: dict[str, Any] = {"evseSerialNumber": serial}
         if session_id is not None:
             payload["sessionId"] = session_id
-        return await self._post_command(url, payload)
+        return await self._post_command(url, payload, attempts=attempts)
 
     async def async_get_recharge_sessions(
         self, network_uid: str, limit: int = 1000
