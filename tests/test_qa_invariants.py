@@ -203,6 +203,34 @@ def test_switch_state_agrees_with_the_status() -> None:
             assert enabled is True, (state, status)
 
 
+
+def test_floor_never_excludes_a_configured_value() -> None:
+    """A slider that omits the charger's own setting is broken.
+
+    Sweeps settings against the voltage-less case, which is when the
+    computed floor is least trustworthy.
+    """
+    for configured in (6000, 6200, 6521, 6600, 8000, 16000, 32000):
+        data = {"maxExternalChargingCurrentInMilliAmps": configured}
+        floor = payload.min_charging_current(data)
+        assert floor <= max(
+            configured, payload.ABSOLUTE_MIN_CHARGING_CURRENT_MA
+        ), (configured, floor)
+
+
+def test_clamping_only_ever_lowers_the_floor() -> None:
+    """Knowing the setting must not raise the minimum."""
+    for configured in (6000, 6521, 16000, 32000):
+        bare = payload.min_charging_current({"lastACVoltageL1": 232})
+        with_setting = payload.min_charging_current(
+            {
+                "lastACVoltageL1": 232,
+                "maxExternalChargingCurrentInMilliAmps": configured,
+            }
+        )
+        assert with_setting <= bare, (configured, bare, with_setting)
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

@@ -26,6 +26,8 @@ from typing import Any
 
 # EVSE state values confirmed against live hardware:
 #
+#   1  idle      observed with no chargeSession at all: the car is
+#                not connected or the session has ended
 #   3  charging  observed while delivering 2688 W with a session running
 #   5  waiting   observed immediately after a start or resume takes
 #                effect: isPaused cleared and evseSuspensionReason
@@ -37,6 +39,7 @@ from typing import Any
 #
 # Other values remain unknown, so an unrecognised state reports "idle"
 # rather than inventing a meaning.
+EVSE_STATE_IDLE = 1
 EVSE_STATE_CHARGING = 3
 EVSE_STATE_WAITING_FOR_EV = 5
 EVSE_STATE_PAUSED = 6
@@ -349,5 +352,16 @@ def min_charging_current(data: dict[str, Any] | None) -> int:
 
     # Round up: rounding down would land back under the power floor.
     stepped = math.ceil(required_ma / CURRENT_STEP_MA) * CURRENT_STEP_MA
+    floor = max(ABSOLUTE_MIN_CHARGING_CURRENT_MA, int(stepped))
 
-    return max(ABSOLUTE_MIN_CHARGING_CURRENT_MA, int(stepped))
+    # Never exclude the value the charger is already using. With no
+    # session there is no voltage reading, so the nominal 230 V is
+    # assumed and the computed floor can land above a setting the
+    # charger demonstrably accepted at its real voltage. Offering a
+    # range that omits the current value is worse than offering one
+    # value that might be refused.
+    configured = (data or {}).get("maxExternalChargingCurrentInMilliAmps")
+    if isinstance(configured, (int, float)) and configured > 0:
+        floor = min(floor, max(int(configured), ABSOLUTE_MIN_CHARGING_CURRENT_MA))
+
+    return floor

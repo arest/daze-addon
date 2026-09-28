@@ -618,6 +618,50 @@ def test_optimistic_rule_treats_zero_as_a_real_value() -> None:
     assert keep is True
 
 
+
+def test_state_1_is_idle() -> None:
+    """Observed with no chargeSession: car unplugged or session ended."""
+    data = payload.merge_payload(
+        {"evseState": 1, "isPaused": False, "chargeSession": None}, None
+    )
+    assert data["evseStatus"] == "idle"
+
+
+def test_floor_never_excludes_the_configured_value() -> None:
+    """With no session there is no voltage, so the floor is a guess.
+
+    Observed: the charger sat at 6521 mA while idle. Falling back to
+    230 V computes a 6600 mA floor, which would put the slider's
+    minimum above the value the charger was actually using.
+    """
+    idle = {"maxExternalChargingCurrentInMilliAmps": 6521}
+    assert payload.min_charging_current(idle) <= 6521
+
+
+def test_floor_is_not_dragged_down_by_a_high_setting() -> None:
+    """Clamping must only ever lower the floor to reach the setting."""
+    data = {"maxExternalChargingCurrentInMilliAmps": 16000}
+    assert payload.min_charging_current(data) == 6600
+
+
+def test_floor_ignores_an_impossible_configured_value() -> None:
+    """A nonsense setting must not drop the floor below 6 A."""
+    data = {"maxExternalChargingCurrentInMilliAmps": 100}
+    assert (
+        payload.min_charging_current(data)
+        == payload.ABSOLUTE_MIN_CHARGING_CURRENT_MA
+    )
+
+
+def test_measured_voltage_still_wins_when_available() -> None:
+    """The clamp must not override a real reading."""
+    charging = {
+        "lastACVoltageL1": 232,
+        "maxExternalChargingCurrentInMilliAmps": 6521,
+    }
+    assert payload.min_charging_current(charging) == 6500
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [
