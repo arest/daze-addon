@@ -22,6 +22,7 @@ directly.
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from typing import Any
 
 # EVSE state values confirmed against live hardware:
@@ -492,3 +493,63 @@ def device_name(evse_record: dict[str, Any] | None) -> str:
         return name.strip()
 
     return DEFAULT_DEVICE_NAME
+
+
+# How long the charger's own attributes may go unrefreshed before it is
+# treated as not reporting. It updated every few seconds in every
+# capture taken, including while idle, so a gap this long means it is
+# not talking to the service.
+#
+# Inferred rather than measured: no capture exists of a charger that
+# was switched off at the wall, because the API kept serving the last
+# known record. If this turns out to be wrong the symptom is a command
+# refused when it would have worked, which the message names explicitly
+# so it can be recognised.
+STALE_REPORT_SECONDS = 900
+
+
+def last_reported_at(data: dict[str, Any] | None) -> datetime | None:
+    """Return when the charger last refreshed its own attributes."""
+    raw = (data or {}).get("lastAttributesUpdatedOn")
+
+    if not isinstance(raw, str) or not raw:
+        return None
+
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def charger_offline_reason(data: dict[str, Any] | None) -> str | None:
+    """Explain why a command cannot reach the charger, if it cannot.
+
+    Cutting power to the wallbox leaves the cloud API serving its last
+    known record, so a command is accepted by the service and then
+    fails against a device that is not there. That surfaces as HTTP 500
+    with error 101 after a long retry, which reads like a service
+    outage rather than a charger that is switched off.
+
+    Args:
+        data: The merged payload, or None before the first poll.
+
+    Returns:
+        None if the charger appears reachable, otherwise a reason.
+
+    """
+    if not data:
+        return None
+
+    if data.get("active") is False:
+        return "the charger reports itself as not active"
+
+    reported = last_reported_at(data)
+    if reported is not None:
+        age = (datetime.now(timezone.utc) - reported).total_seconds()
+        if age > STALE_REPORT_SECONDS:
+            return (
+                f"the charger last reported {int(age // 60)} minutes ago, "
+                "so it appears to be switched off or offline"
+            )
+
+    return None

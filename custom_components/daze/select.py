@@ -33,6 +33,7 @@ from .const import (
 )
 from .coordinator import DazeDataUpdateCoordinator
 from .optimistic import OptimisticState
+from .payload import charger_offline_reason
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -171,6 +172,15 @@ class DazeWallboxSelectEntity(
             self._notify_error(
                 "Scheduled operation mode is not yet supported via the "
                 "Daze API. Please use 'Fast' or 'Eco' mode."
+            )
+            return
+
+        offline = charger_offline_reason(self.coordinator.data)
+        if offline is not None:
+            _LOGGER.info("Not sending: %s", offline)
+            self._notify_error(
+                f"The command was not sent because {offline}. "
+                "Check that the wallbox has power."
             )
             return
 

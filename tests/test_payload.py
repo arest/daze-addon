@@ -739,6 +739,59 @@ def test_device_name_is_trimmed() -> None:
     assert payload.device_name({"evseName": "  Garage  "}) == "Garage"
 
 
+
+# ------------------------------------------------------------------
+# Detecting a charger that has lost power
+# ------------------------------------------------------------------
+
+
+def _reported(minutes_ago: float) -> str:
+    """Return an attribute timestamp that old."""
+    from datetime import datetime, timedelta, timezone
+
+    when = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+    return when.isoformat().replace("+00:00", "Z")
+
+
+def test_a_reporting_charger_is_not_blocked() -> None:
+    """The guard must not interfere with a healthy charger."""
+    data = {"active": True, "lastAttributesUpdatedOn": _reported(0.1)}
+    assert payload.charger_offline_reason(data) is None
+
+
+def test_an_inactive_charger_is_blocked() -> None:
+    """active=False is the charger saying so itself."""
+    reason = payload.charger_offline_reason({"active": False})
+    assert reason is not None
+    assert "not active" in reason
+
+
+def test_a_silent_charger_is_blocked() -> None:
+    """Cutting power leaves the API serving its last known record.
+
+    The command then fails against a device that is not there, which
+    surfaces as a long retry and an error about the service being
+    unreachable rather than about the charger being switched off.
+    """
+    data = {"active": True, "lastAttributesUpdatedOn": _reported(40)}
+    reason = payload.charger_offline_reason(data)
+    assert reason is not None
+    assert "switched off" in reason
+
+
+def test_a_missing_timestamp_does_not_block() -> None:
+    """Absence of evidence is not evidence: do not guess offline."""
+    assert payload.charger_offline_reason({"active": True}) is None
+    assert payload.charger_offline_reason({}) is None
+    assert payload.charger_offline_reason(None) is None
+
+
+def test_an_unparseable_timestamp_does_not_block() -> None:
+    """A format change must not lock the user out of their charger."""
+    data = {"active": True, "lastAttributesUpdatedOn": "not a date"}
+    assert payload.charger_offline_reason(data) is None
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

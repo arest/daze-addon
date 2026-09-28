@@ -874,6 +874,56 @@ def test_both_views_settle_together() -> None:
     assert coordinator.limit_state.pending is False
 
 
+
+def test_a_command_is_not_sent_to_a_silent_charger() -> None:
+    """Spending 33 seconds of retries on a powered-off charger is waste.
+
+    The API keeps serving the last known record, so the command is
+    accepted and then fails against a device that is not there. The
+    resulting message blamed the Daze service rather than the power
+    supply.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    stale = (datetime.now(timezone.utc) - timedelta(minutes=40))
+    notifications.clear()
+
+    entity, _, client = make_number(
+        data={
+            **BASE_DATA,
+            "lastAttributesUpdatedOn": stale.isoformat().replace(
+                "+00:00", "Z"
+            ),
+        }
+    )
+
+    asyncio.run(entity.async_set_native_value(16000))
+
+    assert client.calls == [], "nothing should be sent to a silent charger"
+    assert len(notifications) == 1
+    assert "power" in notifications[0]["message"].lower()
+
+
+def test_a_command_is_sent_to_a_reporting_charger() -> None:
+    """The guard must not block a charger that is present."""
+    from datetime import datetime, timezone
+
+    notifications.clear()
+    entity, _, client = make_number(
+        data={
+            **BASE_DATA,
+            "lastAttributesUpdatedOn": datetime.now(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        }
+    )
+
+    asyncio.run(entity.async_set_native_value(16000))
+
+    assert client.calls == [("current", 16000)]
+    assert not notifications
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

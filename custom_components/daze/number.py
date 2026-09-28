@@ -38,6 +38,7 @@ from .const import (
 from .coordinator import DazeDataUpdateCoordinator
 from .payload import (
     POWER_STEP_W,
+    charger_offline_reason,
     grid_cap_advice,
     max_charging_current,
     max_charging_power,
@@ -207,6 +208,16 @@ class DazeWallboxNumberEntity(
         advice = grid_cap_advice(int_value, self.coordinator.data)
         if advice is not None:
             _LOGGER.info("%s", advice)
+
+        offline = charger_offline_reason(self.coordinator.data)
+        if offline is not None:
+            _LOGGER.info("Not sending: %s", offline)
+            self._notify_error(
+                f"The command was not sent because {offline}. "
+                "Check that the wallbox has power."
+            )
+            return
+
 
         try:
             _LOGGER.info(
@@ -410,6 +421,16 @@ class DazeWallboxPowerEntity(
         advice = grid_cap_advice(milliamps, self.coordinator.data)
         if advice is not None:
             _LOGGER.info("%s", advice)
+
+        offline = charger_offline_reason(self.coordinator.data)
+        if offline is not None:
+            _LOGGER.info("Not sending: %s", offline)
+            self._notify_error(
+                f"The command was not sent because {offline}. "
+                "Check that the wallbox has power."
+            )
+            return
+
 
         try:
             _LOGGER.info(

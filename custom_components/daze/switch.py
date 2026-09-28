@@ -33,7 +33,7 @@ from .const import (
 )
 from .coordinator import DazeDataUpdateCoordinator
 from .optimistic import OptimisticState
-from .payload import is_charge_enabled
+from .payload import charger_offline_reason, is_charge_enabled
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -135,6 +135,15 @@ class DazeWallboxSwitchEntity(
             )
             return
 
+        offline = charger_offline_reason(self.coordinator.data)
+        if offline is not None:
+            _LOGGER.info("Not sending: %s", offline)
+            self._notify_error(
+                f"The command was not sent because {offline}. "
+                "Check that the wallbox has power."
+            )
+            return
+
         try:
             _LOGGER.info(
                 "Starting charge on wallbox %s", self._serial_number
@@ -187,6 +196,15 @@ class DazeWallboxSwitchEntity(
         if self.is_on is False or self.is_on is None:
             _LOGGER.debug(
                 "Switch turn_off called but not charging — skipping"
+            )
+            return
+
+        offline = charger_offline_reason(self.coordinator.data)
+        if offline is not None:
+            _LOGGER.info("Not sending: %s", offline)
+            self._notify_error(
+                f"The command was not sent because {offline}. "
+                "Check that the wallbox has power."
             )
             return
 
