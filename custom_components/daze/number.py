@@ -36,7 +36,6 @@ from .const import (
     POST_COMMAND_REFRESH_DELAY,
 )
 from .coordinator import DazeDataUpdateCoordinator
-from .optimistic import OptimisticState
 from .payload import (
     POWER_STEP_W,
     grid_cap_advice,
@@ -95,7 +94,20 @@ class DazeWallboxNumberEntity(
         self._serial_number = serial_number
         self._attr_unique_id = f"{serial_number}_max_charging_current"
         self._attr_device_info = device_info
-        self._optimistic = OptimisticState()
+
+    async def async_added_to_hass(self) -> None:
+        """Redraw when the other view of the limit changes.
+
+        The current and the power entity are one setting. Without this
+        the view the user did not touch keeps showing the old figure
+        until the next poll.
+        """
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self.coordinator.async_add_limit_listener(
+                self.async_write_ha_state
+            )
+        )
 
     @property
     def native_min_value(self) -> float:
@@ -129,7 +141,7 @@ class DazeWallboxNumberEntity(
         take minutes, so reading the last poll would snap the slider
         back to its old position and look like nothing happened.
         """
-        return self._optimistic.resolve(self._reported_value)
+        return self.coordinator.limit_state.resolve(self._reported_value)
 
     @property
     def _reported_value(self) -> int | None:
@@ -149,20 +161,22 @@ class DazeWallboxNumberEntity(
 
     def _show_requested(self, value: int, awaiting_retry: bool) -> None:
         """Display a requested value and re-read the charger later."""
-        self._optimistic.request(value, awaiting_retry)
+        self.coordinator.limit_state.request(value, awaiting_retry)
         self.async_write_ha_state()
+        self.coordinator.async_notify_limit_listeners()
         self.coordinator.async_schedule_refresh_in(POST_COMMAND_REFRESH_DELAY)
 
     def _clear_requested(self, message: str) -> None:
         """Drop a pending value and explain why."""
-        self._optimistic.clear()
+        self.coordinator.limit_state.clear()
         self.async_write_ha_state()
+        self.coordinator.async_notify_limit_listeners()
         self._notify_error(message)
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Stop showing the request once the charger reports it."""
-        self._optimistic.settle(self._reported_value)
+        self.coordinator.limit_state.settle(self._reported_value)
         super()._handle_coordinator_update()
 
     async def async_set_native_value(self, value: float) -> None:
@@ -269,7 +283,6 @@ class DazeWallboxNumberEntity(
         )
 
 
-
 class DazeWallboxPowerEntity(
     CoordinatorEntity[DazeDataUpdateCoordinator], NumberEntity
 ):
@@ -307,9 +320,20 @@ class DazeWallboxPowerEntity(
         self._serial_number = serial_number
         self._attr_unique_id = f"{serial_number}_max_charging_power"
         self._attr_device_info = device_info
-        # Watts are derived from a fluctuating voltage, so the
-        # charger's reading is compared within one step.
-        self._optimistic = OptimisticState(tolerance=POWER_STEP_W)
+
+    async def async_added_to_hass(self) -> None:
+        """Redraw when the other view of the limit changes.
+
+        The current and the power entity are one setting. Without this
+        the view the user did not touch keeps showing the old figure
+        until the next poll.
+        """
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self.coordinator.async_add_limit_listener(
+                self.async_write_ha_state
+            )
+        )
 
     @property
     def native_min_value(self) -> float:
@@ -324,11 +348,23 @@ class DazeWallboxPowerEntity(
     @property
     def native_value(self) -> int | None:
         """Return the configured limit expressed in watts."""
-        return self._optimistic.resolve(self._reported_watts)
+        milliamps = self.coordinator.limit_state.resolve(
+            self._reported_current
+        )
+
+        if milliamps is None:
+            return None
+
+        return milliamps_to_watts(milliamps, self.coordinator.data)
 
     @property
-    def _reported_watts(self) -> int | None:
-        """Return the charger's limit converted to watts."""
+    def _reported_current(self) -> int | None:
+        """Return the charger's limit in milliamps.
+
+        Resolved in milliamps rather than watts so both views compare
+        the same figure. Comparing derived watts meant a one volt
+        drift between the command and the next poll made them disagree.
+        """
         if self.coordinator.data is None:
             return None
 
@@ -338,7 +374,7 @@ class DazeWallboxPowerEntity(
         ):
             value = self.coordinator.data.get(field)
             if value is not None:
-                return milliamps_to_watts(int(value), self.coordinator.data)
+                return int(value)
 
         return None
 
@@ -390,7 +426,7 @@ class DazeWallboxPowerEntity(
             self.coordinator.async_cancel_background_retry(
                 f"{self._serial_number}:current"
             )
-            self._show_requested(watts, awaiting_retry=False)
+            self._show_requested(milliamps, awaiting_retry=False)
         except ApiAuthError as err:
             _LOGGER.warning(
                 "Auth error setting power on %s: %s", self._serial_number, err
@@ -412,7 +448,7 @@ class DazeWallboxPowerEntity(
                     description=f"Setting the charging power to {watts} W",
                     on_failure=self._clear_requested,
                 )
-                self._show_requested(watts, awaiting_retry=True)
+                self._show_requested(milliamps, awaiting_retry=True)
                 return
 
             self._notify_error(
@@ -426,22 +462,24 @@ class DazeWallboxPowerEntity(
             )
             self._notify_error(f"Failed to set the charging power. {err}")
 
-    def _show_requested(self, watts: int, awaiting_retry: bool) -> None:
-        """Display a requested power and re-read the charger later."""
-        self._optimistic.request(watts, awaiting_retry)
+    def _show_requested(self, milliamps: int, awaiting_retry: bool) -> None:
+        """Display a requested limit and re-read the charger later."""
+        self.coordinator.limit_state.request(milliamps, awaiting_retry)
         self.async_write_ha_state()
+        self.coordinator.async_notify_limit_listeners()
         self.coordinator.async_schedule_refresh_in(POST_COMMAND_REFRESH_DELAY)
 
     def _clear_requested(self, message: str) -> None:
         """Drop a pending power and explain why."""
-        self._optimistic.clear()
+        self.coordinator.limit_state.clear()
         self.async_write_ha_state()
+        self.coordinator.async_notify_limit_listeners()
         self._notify_error(message)
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Stop showing the request once the charger reports it."""
-        self._optimistic.settle(self._reported_watts)
+        self.coordinator.limit_state.settle(self._reported_current)
         super()._handle_coordinator_update()
 
     def _notify_error(self, message: str) -> None:

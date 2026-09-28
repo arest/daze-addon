@@ -45,6 +45,7 @@ class StubCoordinatorEntity:
         self.coordinator = coordinator
         self.hass = object()
         self.state_writes = 0
+        self.removers: list[Any] = []
 
     def async_write_ha_state(self) -> None:
         """Count frontend updates instead of performing one."""
@@ -53,6 +54,13 @@ class StubCoordinatorEntity:
     def _handle_coordinator_update(self) -> None:
         """Base implementation does nothing here."""
         self.state_writes += 1
+
+    async def async_added_to_hass(self) -> None:
+        """Base implementation does nothing here."""
+
+    def async_on_remove(self, remove: Any) -> None:
+        """Record a teardown callback."""
+        self.removers.append(remove)
 
 
 class StubDataUpdateCoordinator:
@@ -239,6 +247,18 @@ class FakeCoordinator(StubDataUpdateCoordinator):
         self.data = data
         self.refresh_delays: list[int] = []
         self.background: list[dict[str, Any]] = []
+        self.limit_state = optimistic_module.OptimisticState()
+        self.limit_listeners: list[Any] = []
+
+    def async_add_limit_listener(self, listener: Any) -> Any:
+        """Register a redraw callback."""
+        self.limit_listeners.append(listener)
+        return lambda: self.limit_listeners.remove(listener)
+
+    def async_notify_limit_listeners(self) -> None:
+        """Redraw every registered view."""
+        for listener in list(self.limit_listeners):
+            listener()
 
     def async_schedule_refresh_in(self, delay: int) -> None:
         """Record a delayed refresh."""
@@ -373,7 +393,7 @@ def test_display_returns_to_reality_once_the_charger_agrees() -> None:
     coordinator.data["maxExternalChargingCurrentInMilliAmps"] = 16000
     entity._handle_coordinator_update()
 
-    assert entity._optimistic.pending is False
+    assert coordinator.limit_state.pending is False
     assert entity.native_value == 16000
 
 
@@ -755,6 +775,103 @@ def test_shared_state_ignores_an_unknown_reading() -> None:
     state.request(16000)
     assert state.resolve(None) == 16000
     assert state.pending is True
+
+
+
+def test_setting_power_updates_the_current_view_at_once() -> None:
+    """One setting, two views: they must not disagree.
+
+    Both read the same field, so they converge on the next poll
+    anyway. The point is that they agree immediately, rather than
+    showing different figures for the ten seconds until then.
+    """
+    coordinator = FakeCoordinator(dict(POWER_DATA))
+    client = FakeApi()
+
+    power = number_module.DazeWallboxPowerEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+    current = number_module.DazeWallboxNumberEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+    asyncio.run(power.async_added_to_hass())
+    asyncio.run(current.async_added_to_hass())
+
+    assert current.native_value == 6521
+    assert power.native_value == 1539
+
+    asyncio.run(power.async_set_native_value(4000))
+
+    # The charger still reports the old figure.
+    assert coordinator.data["maxExternalChargingCurrentInMilliAmps"] == 6521
+    assert power.native_value == 3988
+    assert current.native_value == 16900, "the current view did not follow"
+
+
+def test_setting_current_updates_the_power_view_at_once() -> None:
+    """The same in the other direction."""
+    coordinator = FakeCoordinator(dict(POWER_DATA))
+    client = FakeApi()
+
+    power = number_module.DazeWallboxPowerEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+    current = number_module.DazeWallboxNumberEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+    asyncio.run(power.async_added_to_hass())
+    asyncio.run(current.async_added_to_hass())
+
+    asyncio.run(current.async_set_native_value(16900))
+
+    assert current.native_value == 16900
+    assert power.native_value == 3988, "the power view did not follow"
+
+
+def test_the_untouched_view_is_told_to_redraw() -> None:
+    """Agreeing internally is not enough; the frontend must be told."""
+    coordinator = FakeCoordinator(dict(POWER_DATA))
+    client = FakeApi()
+
+    power = number_module.DazeWallboxPowerEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+    current = number_module.DazeWallboxNumberEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+    asyncio.run(power.async_added_to_hass())
+    asyncio.run(current.async_added_to_hass())
+
+    before = current.state_writes
+    asyncio.run(power.async_set_native_value(4000))
+
+    assert current.state_writes > before
+
+
+def test_both_views_settle_together() -> None:
+    """Once the charger agrees, neither should still be guessing."""
+    coordinator = FakeCoordinator(dict(POWER_DATA))
+    client = FakeApi()
+
+    power = number_module.DazeWallboxPowerEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+    asyncio.run(power.async_added_to_hass())
+
+    asyncio.run(power.async_set_native_value(4000))
+    assert coordinator.limit_state.pending is True
+
+    coordinator.data["maxExternalChargingCurrentInMilliAmps"] = 16900
+    power._handle_coordinator_update()
+
+    assert coordinator.limit_state.pending is False
 
 
 def _main() -> int:

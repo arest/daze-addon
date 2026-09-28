@@ -33,6 +33,7 @@ from .const import (
     MIN_POLL_INTERVAL,
 )
 from .models import RechargeSession
+from .optimistic import OptimisticState
 from .payload import merge_payload
 
 _LOGGER = logging.getLogger(__name__)
@@ -111,6 +112,12 @@ class DazeDataUpdateCoordinator(
         self._sessions_missing_logged: bool = False
         self._pending_retries: dict[str, Callable[[], None]] = {}
         self._pending_timers: set[Callable[[], None]] = set()
+        # The charging limit is one setting with two views, in amps
+        # and in watts. Held here, in milliamps, so both entities
+        # show a pending change at once instead of disagreeing
+        # until the next refresh.
+        self._limit_state = OptimisticState()
+        self._limit_listeners: list[Callable[[], None]] = []
 
         super().__init__(
             hass,
@@ -248,6 +255,40 @@ class DazeDataUpdateCoordinator(
         )
         _schedule(attempts[0])
 
+    @property
+    def limit_state(self) -> OptimisticState:
+        """Return the shared pending charging limit, in milliamps."""
+        return self._limit_state
+
+    def async_add_limit_listener(
+        self, listener: Callable[[], None]
+    ) -> Callable[[], None]:
+        """Register a callback for changes to the pending limit.
+
+        Args:
+            listener: Called when the pending limit changes.
+
+        Returns:
+            A callable that unregisters the listener.
+
+        """
+        self._limit_listeners.append(listener)
+
+        def _remove() -> None:
+            if listener in self._limit_listeners:
+                self._limit_listeners.remove(listener)
+
+        return _remove
+
+    def async_notify_limit_listeners(self) -> None:
+        """Tell both views of the limit to redraw.
+
+        Called after one of them requests a change, so the other does
+        not keep showing the previous value until the next poll.
+        """
+        for listener in list(self._limit_listeners):
+            listener()
+
     def async_shutdown_timers(self) -> None:
         """Cancel every callback this coordinator has scheduled.
 
@@ -263,6 +304,8 @@ class DazeDataUpdateCoordinator(
 
         for key in list(self._pending_retries):
             self.async_cancel_background_retry(key)
+
+        self._limit_listeners.clear()
 
         _LOGGER.debug("Cancelled pending timers for %s", self._serial_number)
 
