@@ -134,6 +134,7 @@ def install_homeassistant_stubs() -> list[tuple[Any, Any, Any]]:
         UnitOfElectricCurrent=type(
             "UnitOfElectricCurrent", (), {"MILLIAMPERE": "mA"}
         ),
+        UnitOfPower=type("UnitOfPower", (), {"WATT": "W"}),
     )
     _module(
         "homeassistant.core",
@@ -470,6 +471,104 @@ def test_new_mode_is_held_while_a_retry_runs() -> None:
 
     assert len(coordinator.background) == 1
     assert entity.current_option == "eco"
+
+
+
+# ------------------------------------------------------------------
+# The power view of the same setting
+# ------------------------------------------------------------------
+
+
+POWER_DATA: dict[str, Any] = {
+    "maxExternalChargingCurrentInMilliAmps": 6521,
+    "lastMaxInstallationCurrent": 32000,
+    "lastACVoltageL1": 236,
+}
+
+
+def make_power(
+    error: Exception | None = None,
+) -> tuple[Any, FakeCoordinator, FakeApi]:
+    """Build a power entity wired to fakes."""
+    coordinator = FakeCoordinator(dict(POWER_DATA))
+    client = FakeApi(error)
+    entity = number_module.DazeWallboxPowerEntity(
+        coordinator=coordinator,
+        api_client=client,
+        serial_number="SER1",
+        device_info={},
+    )
+    return entity, coordinator, client
+
+
+def test_power_entity_reports_the_limit_in_watts() -> None:
+    """6521 mA at 236 V is about 1539 W."""
+    entity, _, _ = make_power()
+    assert entity.native_value == 1539
+
+
+def test_setting_power_sends_the_converted_current() -> None:
+    """Reproduces the change verified against the charger.
+
+    Asking for 4000 W at 236 V sent 16900 mA, which was accepted and
+    read back unchanged.
+    """
+    entity, _, client = make_power()
+
+    asyncio.run(entity.async_set_native_value(4000))
+
+    assert client.calls == [("current", 16900)]
+    assert entity.native_value == 3988
+
+
+def test_power_entity_shows_the_request_immediately() -> None:
+    """Same display rule as the current entity."""
+    entity, coordinator, _ = make_power()
+
+    asyncio.run(entity.async_set_native_value(4000))
+
+    # The charger still reports the old current.
+    assert coordinator.data["maxExternalChargingCurrentInMilliAmps"] == 6521
+    assert entity.native_value == 3988
+
+
+def test_power_entity_bounds_come_from_the_charger() -> None:
+    """1.5 kW floor and the installation rating, at 236 V."""
+    entity, _, _ = make_power()
+
+    assert entity.native_min_value == 1600
+    assert entity.native_max_value == 7500
+
+
+def test_power_entity_retries_an_unreachable_charger() -> None:
+    """Shares the background retry with the current entity."""
+    notifications.clear()
+    entity, coordinator, _ = make_power(error=rpc_failure())
+
+    asyncio.run(entity.async_set_native_value(4000))
+
+    assert len(coordinator.background) == 1
+    assert entity.native_value == 3988
+    assert not notifications
+
+
+def test_power_and_current_entities_agree() -> None:
+    """They are two views of one setting and must not disagree."""
+    power, coordinator, _ = make_power()
+    current = number_module.DazeWallboxNumberEntity(
+        coordinator=coordinator,
+        api_client=FakeApi(),
+        serial_number="SER1",
+        device_info={},
+    )
+
+    assert current.native_value == 6521
+    assert power.native_value == 1539
+
+    coordinator.data["maxExternalChargingCurrentInMilliAmps"] = 16900
+
+    assert current.native_value == 16900
+    assert power.native_value == 3988
 
 
 def _main() -> int:

@@ -662,6 +662,74 @@ def test_measured_voltage_still_wins_when_available() -> None:
     assert payload.min_charging_current(charging) == 6500
 
 
+
+# ------------------------------------------------------------------
+# Power view of the charging limit
+# ------------------------------------------------------------------
+
+
+MEASURED = {
+    "lastACVoltageL1": 236,
+    "lastMaxInstallationCurrent": 32000,
+    "maxExternalChargingCurrentInMilliAmps": 16900,
+}
+
+
+def test_power_conversion_matches_the_verified_setting() -> None:
+    """Reproduces a change confirmed against the charger.
+
+    Asking for 4000 W at 236 V produced 16900 mA, which the charger
+    accepted and read back.
+    """
+    assert payload.watts_to_milliamps(4000, MEASURED) == 16900
+    assert payload.milliamps_to_watts(16900, MEASURED) == 3988
+
+
+def test_power_request_is_clamped_to_the_accepted_range() -> None:
+    """A round figure near a boundary is corrected, not refused."""
+    assert payload.watts_to_milliamps(100, MEASURED) == (
+        payload.min_charging_current(MEASURED)
+    )
+    assert payload.watts_to_milliamps(99999, MEASURED) == (
+        payload.max_charging_current(MEASURED)
+    )
+
+
+def test_power_bounds_stay_inside_the_current_bounds() -> None:
+    """Offering a wattage that converts outside the range would fail."""
+    for volts in (220, 230, 236, 245):
+        data = {"lastACVoltageL1": volts, "lastMaxInstallationCurrent": 32000}
+
+        low_w = payload.min_charging_power(data)
+        high_w = payload.max_charging_power(data)
+
+        assert payload.watts_to_milliamps(low_w, data) >= (
+            payload.min_charging_current(data)
+        )
+        assert payload.watts_to_milliamps(high_w, data) <= (
+            payload.max_charging_current(data)
+        )
+
+
+def test_power_bounds_clear_the_charger_floor() -> None:
+    """The lowest offered wattage must still be at least 1500 W."""
+    for volts in (220, 230, 236, 245):
+        data = {"lastACVoltageL1": volts, "lastMaxInstallationCurrent": 32000}
+        assert (
+            payload.min_charging_power(data)
+            >= payload.MIN_CHARGING_POWER_W
+        )
+
+
+def test_power_round_trips_within_a_step() -> None:
+    """Converting to current and back must not drift."""
+    for watts in (1600, 2000, 3000, 4000, 5500, 7000):
+        milliamps = payload.watts_to_milliamps(watts, MEASURED)
+        back = payload.milliamps_to_watts(milliamps, MEASURED)
+        # One current step at 236 V is about 24 W.
+        assert abs(back - watts) <= 30, (watts, milliamps, back)
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

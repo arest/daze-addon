@@ -16,7 +16,11 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.number import NumberEntity
-from homeassistant.const import EntityCategory, UnitOfElectricCurrent
+from homeassistant.const import (
+    EntityCategory,
+    UnitOfElectricCurrent,
+    UnitOfPower,
+)
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -35,9 +39,14 @@ from .const import (
 )
 from .coordinator import DazeDataUpdateCoordinator
 from .payload import (
+    POWER_STEP_W,
     max_charging_current,
+    max_charging_power,
+    milliamps_to_watts,
     min_charging_current,
+    min_charging_power,
     resolve_optimistic,
+    watts_to_milliamps,
 )
 
 if TYPE_CHECKING:
@@ -277,6 +286,202 @@ class DazeWallboxNumberEntity(
         )
 
 
+
+class DazeWallboxPowerEntity(
+    CoordinatorEntity[DazeDataUpdateCoordinator], NumberEntity
+):
+    """Set the charging limit as a power figure rather than a current.
+
+    The charger's API speaks milliamps, but a wallbox is sold in kW and
+    the charger's own minimum is a wattage, so power is what a user
+    thinks in. This is a second view of the same setting: changing
+    either entity moves the other.
+    """
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_step = POWER_STEP_W
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+
+    def __init__(
+        self,
+        coordinator: DazeDataUpdateCoordinator,
+        api_client: Any,
+        serial_number: str,
+        device_info: DeviceInfo,
+    ) -> None:
+        """Initialise the power entity.
+
+        Args:
+            coordinator: The Daze data coordinator.
+            api_client: The Daze API client.
+            serial_number: The wallbox serial number.
+            device_info: Device info for the wallbox device registry.
+
+        """
+        super().__init__(coordinator)
+        self._api_client = api_client
+        self._serial_number = serial_number
+        self._attr_unique_id = f"{serial_number}_max_charging_power"
+        self._attr_device_info = device_info
+        self._optimistic_watts: int | None = None
+        self._optimistic_since: float = 0.0
+        self._awaiting_retry: bool = False
+
+    @property
+    def native_min_value(self) -> float:
+        """Return the lowest selectable power."""
+        return float(min_charging_power(self.coordinator.data))
+
+    @property
+    def native_max_value(self) -> float:
+        """Return the highest selectable power."""
+        return float(max_charging_power(self.coordinator.data))
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the configured limit expressed in watts."""
+        value, keep = resolve_optimistic(
+            self._optimistic_watts, self._reported_watts, self._expired
+        )
+
+        if not keep:
+            self._optimistic_watts = None
+
+        return value
+
+    @property
+    def _reported_watts(self) -> int | None:
+        """Return the charger's limit converted to watts."""
+        if self.coordinator.data is None:
+            return None
+
+        for field in (
+            "maxExternalChargingCurrentInMilliAmps",
+            "lastMaxChargingCurrent",
+        ):
+            value = self.coordinator.data.get(field)
+            if value is not None:
+                return milliamps_to_watts(int(value), self.coordinator.data)
+
+        return None
+
+    @property
+    def _expired(self) -> bool:
+        """Whether a pending change has been shown for too long."""
+        if self._optimistic_watts is None:
+            return True
+        if self._awaiting_retry:
+            return False
+        return (
+            time.monotonic() - self._optimistic_since
+            > OPTIMISTIC_STATE_TIMEOUT
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set the limit from a power figure.
+
+        Converted to the nearest usable current at the charger's
+        measured voltage, and clamped to the accepted range so a round
+        figure near a boundary is corrected rather than refused.
+        """
+        milliamps = watts_to_milliamps(value, self.coordinator.data)
+        watts = milliamps_to_watts(milliamps, self.coordinator.data)
+
+        current = self.coordinator.data or {}
+        if current.get("maxExternalChargingCurrentInMilliAmps") == milliamps:
+            _LOGGER.debug(
+                "Power set to %d W, already at %d mA, skipping",
+                watts,
+                milliamps,
+            )
+            return
+
+        try:
+            _LOGGER.info(
+                "Setting charging power on %s to %d W (%d mA)",
+                self._serial_number,
+                watts,
+                milliamps,
+            )
+            await self._api_client.async_set_max_charging_current(
+                self._serial_number,
+                milliamps,
+                attempts=INLINE_COMMAND_ATTEMPTS,
+            )
+            self._show_requested(watts, awaiting_retry=False)
+        except ApiAuthError as err:
+            _LOGGER.warning(
+                "Auth error setting power on %s: %s", self._serial_number, err
+            )
+            self._notify_error(
+                "Authentication failed when trying to set the charging "
+                "power. Please re-authenticate the integration."
+            )
+        except ApiCommandRejectedError as err:
+            if err.code == COMMAND_ERROR_CODE_RPC_FAILURE:
+                self.coordinator.async_retry_in_background(
+                    key=f"{self._serial_number}:current",
+                    action=lambda: self._api_client.
+                    async_set_max_charging_current(
+                        self._serial_number,
+                        milliamps,
+                        attempts=INLINE_COMMAND_ATTEMPTS,
+                    ),
+                    description=f"Setting the charging power to {watts} W",
+                    on_failure=self._clear_requested,
+                )
+                self._show_requested(watts, awaiting_retry=True)
+                return
+
+            self._notify_error(
+                f"{err} This charger accepts "
+                f"{min_charging_power(self.coordinator.data)} to "
+                f"{max_charging_power(self.coordinator.data)} W."
+            )
+        except ApiError as err:
+            _LOGGER.warning(
+                "API error setting power on %s: %s", self._serial_number, err
+            )
+            self._notify_error(f"Failed to set the charging power. {err}")
+
+    def _show_requested(self, watts: int, awaiting_retry: bool) -> None:
+        """Display a requested power and re-read the charger later."""
+        self._optimistic_watts = watts
+        self._optimistic_since = time.monotonic()
+        self._awaiting_retry = awaiting_retry
+        self.async_write_ha_state()
+        self.coordinator.async_schedule_refresh_in(POST_COMMAND_REFRESH_DELAY)
+
+    def _clear_requested(self, message: str) -> None:
+        """Drop a pending power and explain why."""
+        self._optimistic_watts = None
+        self._awaiting_retry = False
+        self.async_write_ha_state()
+        self._notify_error(message)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Stop showing the request once the charger reports it."""
+        if (
+            self._optimistic_watts is not None
+            and self._reported_watts == self._optimistic_watts
+        ):
+            self._optimistic_watts = None
+            self._awaiting_retry = False
+
+        super()._handle_coordinator_update()
+
+    def _notify_error(self, message: str) -> None:
+        """Show a persistent notification in the HA frontend."""
+        persistent_notification.async_create(
+            self.hass,
+            message,
+            title="Daze Wallbox — Charging Power Error",
+            notification_id=f"daze_power_error_{self._serial_number}",
+        )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -303,6 +508,12 @@ async def async_setup_entry(
                 api_client=api_client,
                 serial_number=serial_number,
                 device_info=device_info,
-            )
+            ),
+            DazeWallboxPowerEntity(
+                coordinator=coordinator,
+                api_client=api_client,
+                serial_number=serial_number,
+                device_info=device_info,
+            ),
         ]
     )

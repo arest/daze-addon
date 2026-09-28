@@ -140,6 +140,10 @@
       "max_charging_current": {
         "name": "Corrente massima di carica",
         "entity_category": "config"
+      },
+      "max_charging_power": {
+        "name": "Potenza massima di carica",
+        "entity_category": "config"
       }
     },
     "select": {

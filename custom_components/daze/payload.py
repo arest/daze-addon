@@ -365,3 +365,49 @@ def min_charging_current(data: dict[str, Any] | None) -> int:
         floor = min(floor, max(int(configured), ABSOLUTE_MIN_CHARGING_CURRENT_MA))
 
     return floor
+
+
+# Charging power is the figure users actually think in: a wallbox is
+# sold as 1.5 to 7.4 kW, and the charger's own floor is a wattage. The
+# API only accepts milliamps, so the conversion lives here.
+POWER_STEP_W = 100
+
+
+def milliamps_to_watts(milliamps: float, data: dict[str, Any] | None) -> int:
+    """Convert a charging current to power at the measured voltage."""
+    return round(milliamps * supply_voltage(data) / 1000)
+
+
+def watts_to_milliamps(watts: float, data: dict[str, Any] | None) -> int:
+    """Convert a charging power to current, rounded to a usable step.
+
+    The result is clamped to the range the charger accepts, so a power
+    figure that rounds just outside it is corrected rather than
+    rejected.
+    """
+    volts = supply_voltage(data)
+    raw = watts / volts * 1000
+    stepped = int(round(raw / CURRENT_STEP_MA) * CURRENT_STEP_MA)
+
+    return max(
+        min_charging_current(data), min(max_charging_current(data), stepped)
+    )
+
+
+def min_charging_power(data: dict[str, Any] | None) -> int:
+    """Return the lowest selectable charging power, in watts.
+
+    Rounded up: rounding down would offer a figure that converts back
+    to a current under the charger's floor.
+    """
+    exact = milliamps_to_watts(min_charging_current(data), data)
+    return int(-(-exact // POWER_STEP_W) * POWER_STEP_W)
+
+
+def max_charging_power(data: dict[str, Any] | None) -> int:
+    """Return the highest selectable charging power, in watts.
+
+    Rounded down, for the mirror of the reason above.
+    """
+    exact = milliamps_to_watts(max_charging_current(data), data)
+    return int(exact // POWER_STEP_W * POWER_STEP_W)
