@@ -18,7 +18,7 @@ Daze wallboxes are managed through the [Daze web portal](https://webportal.dazes
 - **Real-time monitoring** — Power (W), delivered energy (Wh), charging current per phase (mA), AC voltage per phase (V), board and case temperatures (°C)
 - **EVSE status** — See whether the wallbox is charging, idle, paused, or in error
 - **Charge control** — Start and stop charging from HA switches, automations, or dashboards
-- **Current limit** — Set the maximum charging current as a number entity (6–32 A, 0.1 A steps)
+- **Charging limit** — Set it in amps or in watts. Both bounds come from the charger: its power floor at the measured voltage, and the installation rating
 - **Operation mode** — Switch between eco, fast, scheduled, and other modes
 - **Session history** — Track energy, duration, and cost per recharge session
 - **Lifetime totals** — Total energy delivered and session count
@@ -110,7 +110,8 @@ If your tokens expire, the integration will automatically prompt you to re-enter
 | Platform | Entity ID | Name | Purpose |
 |----------|-----------|------|---------|
 | Switch | `switch.daze_charge_control` | Charge Control | Start / stop charging |
-| Number | `number.daze_max_charging_current` | Max Charging Current | Set charging current limit (6–32 A) |
+| Number | `number.daze_max_charging_current` | Current | Charging current limit, bounded by the charger's own floor and the installation rating |
+| Number | `number.daze_max_charging_power` | Power | The same limit in watts, bounded by the charger's 1.5 kW floor |
 | Select | `select.daze_operation_mode` | Operation Mode | Switch between eco, fast, scheduled |
 
 ---

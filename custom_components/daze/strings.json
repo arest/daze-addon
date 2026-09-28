@@ -133,10 +133,10 @@
     },
     "number": {
       "max_charging_current": {
-        "name": "Max Charging Current"
+        "name": "Current"
       },
       "max_charging_power": {
-        "name": "Max Charging Power"
+        "name": "Power"
       }
     },
     "select": {
