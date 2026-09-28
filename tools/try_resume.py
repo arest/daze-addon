@@ -425,9 +425,10 @@ def retry_mode(
     print(f"\nBaseline: evseState={state.get('evseState')} "
           f"isPaused={state.get('isPaused')}")
 
-    if not flags.get("assume_yes"):
-        if input("\nProceed? [yes/no] ").strip().lower() != "yes":
-            return 0
+    if not flags.get("assume_yes") and (
+        input("\nProceed? [yes/no] ").strip().lower() != "yes"
+    ):
+        return 0
 
     statuses: list[str] = []
 

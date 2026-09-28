@@ -258,6 +258,91 @@ def watch(token: str, serial: str, target: int) -> dict:
     return samples[-1] if samples else {}
 
 
+def describe(status: int, body: object) -> str:
+    """Summarise a response in one line."""
+    if isinstance(body, dict):
+        errors = body.get("errors")
+        if isinstance(errors, list) and errors:
+            first = errors[0]
+            if isinstance(first, dict):
+                return (
+                    f"HTTP {status} code {first.get('code')}: "
+                    f"{str(first.get('message', ''))[:90]}"
+                )
+        if body.get("_error"):
+            return f"network error: {body['_error']}"
+    return f"HTTP {status}"
+
+
+def read_setting(token: str, serial: str, email: str) -> int | None:
+    """Read the configured current back from the EVSE record."""
+    _, record = discover(token, email)
+    if record.get("serialNumber") != serial:
+        return None
+
+    value = record.get("maxExternalChargingCurrentInMilliAmps")
+    return int(value) if isinstance(value, (int, float)) else None
+
+
+def roundtrip_check(
+    token: str, serial: str, email: str, original: int, targets: tuple[int, ...]
+) -> int:
+    """Verify the setting changes and persists, with no car attached.
+
+    This cannot show whether the charger's draw follows the limit,
+    because nothing is drawing. It does show that the value is
+    accepted, stored and read back, which is what "can I change it
+    dynamically" actually asks.
+    """
+    print("\nNo active charge, so checking that the setting itself")
+    print("changes and persists. This does not prove the draw follows")
+    print("the limit; that needs a car charging.")
+
+    results: list[tuple[int, int | None, bool]] = []
+
+    try:
+        for target in targets:
+            print(f"\n  Setting {target} mA")
+            status, body = set_limit(token, serial, target)
+            print(f"    -> HTTP {status}")
+
+            if not 200 <= status < 300:
+                print(f"    rejected: {describe(status, body)}")
+                results.append((target, None, False))
+                continue
+
+            # Give the service a moment to store it.
+            time.sleep(5)
+            readback = read_setting(token, serial, email)
+            ok = readback == target
+            print(f"    read back: {readback} mA  {'OK' if ok else 'MISMATCH'}")
+            results.append((target, readback, ok))
+    finally:
+        print(f"\nRestoring {original} mA...")
+        status, _ = set_limit(token, serial, original)
+        print(f"  HTTP {status}")
+        time.sleep(3)
+        final = read_setting(token, serial, email)
+        print(f"  read back: {final} mA")
+
+    print("\n" + "=" * 60)
+
+    changed = [r for r in results if r[2]]
+    if len(changed) == len(results) and results:
+        print("The setting can be changed dynamically: every value was")
+        print("accepted and read back unchanged.")
+        print()
+        print("So if Home Assistant is not reflecting a change, the")
+        print("problem is in the integration rather than the charger.")
+        return 0
+
+    print("Some values did not stick:")
+    for target, readback, ok in results:
+        if not ok:
+            print(f"  requested {target} mA, read back {readback}")
+    return 1
+
+
 def main() -> int:
     """Lower the limit, verify the draw follows, then restore."""
     argv = sys.argv[1:]
@@ -310,10 +395,15 @@ def main() -> int:
 
     power = baseline.get("power")
     if not isinstance(power, (int, float)) or power <= 0:
-        print("\nThe car is not drawing any power right now, so there is")
-        print("nothing to measure: a limit change cannot be seen when the")
-        print("draw is already zero. Start a charge and run this again.")
-        return 1
+        print("\nNothing is drawing power, so the effect of a limit change")
+        print("cannot be observed. Falling back to a setting round trip.")
+
+        if not assume_yes and (
+            input("\nProceed? [yes/no] ").strip().lower() != "yes"
+        ):
+            return 0
+
+        return roundtrip_check(token, serial, email, original, (low, high))
 
     print(f"\nPlan: set {low} mA, watch, set {high} mA, watch, "
           f"restore {original} mA.")
