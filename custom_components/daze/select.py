@@ -12,10 +12,12 @@ from __future__ import annotations
 # @property methods by design.
 # pyright: reportIncompatibleVariableOverride=false
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.select import SelectEntity
+from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -25,8 +27,14 @@ from .api import (
     ApiCommandRejectedError,
     ApiError,
 )
-from .const import DOMAIN, INLINE_COMMAND_ATTEMPTS
+from .const import (
+    DOMAIN,
+    INLINE_COMMAND_ATTEMPTS,
+    OPTIMISTIC_STATE_TIMEOUT,
+    POST_COMMAND_REFRESH_DELAY,
+)
 from .coordinator import DazeDataUpdateCoordinator
+from .payload import resolve_optimistic
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -102,13 +110,73 @@ class DazeWallboxSelectEntity(
         self._serial_number = serial_number
         self._attr_unique_id = f"{serial_number}_operation_mode"
         self._attr_device_info = device_info
+        self._optimistic_option: str | None = None
+        self._optimistic_since: float = 0.0
+        self._awaiting_retry: bool = False
 
     @property
     def current_option(self) -> str | None:
-        """Return the current operation mode."""
+        """Return the current operation mode.
+
+        Shows the requested mode while a change is in flight, for the
+        same reason as the current limit: the charger lags, and a
+        background retry can take minutes, so reading the last poll
+        would revert the selection and look like nothing happened.
+        """
+        option, keep = resolve_optimistic(
+            self._optimistic_option, self._reported_option, self._expired
+        )
+
+        if not keep:
+            self._optimistic_option = None
+
+        return option
+
+    @property
+    def _reported_option(self) -> str | None:
+        """Return the mode the charger last reported."""
         if self.coordinator.data is None:
             return None
         return _current_option_from_data(self.coordinator.data)
+
+    @property
+    def _expired(self) -> bool:
+        """Whether a pending change has been shown for too long."""
+        if self._optimistic_option is None:
+            return True
+        if self._awaiting_retry:
+            return False
+        return (
+            time.monotonic() - self._optimistic_since
+            > OPTIMISTIC_STATE_TIMEOUT
+        )
+
+    def _show_requested(self, option: str, awaiting_retry: bool) -> None:
+        """Display a requested mode and re-read the charger later."""
+        self._optimistic_option = option
+        self._optimistic_since = time.monotonic()
+        self._awaiting_retry = awaiting_retry
+        self.async_write_ha_state()
+        self.coordinator.async_schedule_refresh_in(POST_COMMAND_REFRESH_DELAY)
+
+    def _clear_requested(self, message: str) -> None:
+        """Drop a pending mode and explain why."""
+        self._optimistic_option = None
+        self._awaiting_retry = False
+        self.async_write_ha_state()
+        self._notify_error(message)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Stop showing the request once the charger reports it."""
+        if (
+            self._optimistic_option is not None
+            and self._reported_option == self._optimistic_option
+        ):
+            self._optimistic_option = None
+            self._awaiting_retry = False
+
+        super()._handle_coordinator_update()
 
     async def async_select_option(self, option: str) -> None:
         """Set the operation mode on the wallbox.
@@ -151,8 +219,7 @@ class DazeWallboxSelectEntity(
                 eco_value,
                 attempts=INLINE_COMMAND_ATTEMPTS,
             )
-            await self.coordinator.async_request_refresh()
-            self.coordinator.async_schedule_settle_refresh()
+            self._show_requested(option, awaiting_retry=False)
         except ApiAuthError as err:
             _LOGGER.warning(
                 "Auth error setting operation mode on %s: %s",
@@ -173,8 +240,9 @@ class DazeWallboxSelectEntity(
                         attempts=INLINE_COMMAND_ATTEMPTS,
                     ),
                     description=f"Setting the operation mode to {option}",
-                    on_failure=self._notify_error,
+                    on_failure=self._clear_requested,
                 )
+                self._show_requested(option, awaiting_retry=True)
                 return
 
             _LOGGER.info(

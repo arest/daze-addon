@@ -188,10 +188,10 @@ def is_charge_enabled(data: dict[str, Any]) -> bool | None:
 
 
 def resolve_optimistic(
-    optimistic: bool | None,
-    actual: bool | None,
+    optimistic: Any | None,
+    actual: Any | None,
     expired: bool,
-) -> tuple[bool | None, bool]:
+) -> tuple[Any | None, bool]:
     """Decide what a switch should report, and whether to keep guessing.
 
     A command takes effect at the charger several seconds after it is
@@ -202,6 +202,9 @@ def resolve_optimistic(
     The guess is dropped as soon as the charger agrees, and abandoned
     once it has been held too long, so a command that silently failed
     cannot leave the UI wrong indefinitely.
+
+    Works for any value, not just a boolean: a charging current or an
+    operation mode lags the same way a switch does.
 
     Args:
         optimistic: The value the last command asked for, or None.

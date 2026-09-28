@@ -576,6 +576,48 @@ def test_measured_boundary_is_reproduced() -> None:
         assert value >= floor, value
 
 
+
+def test_optimistic_rule_handles_non_boolean_values() -> None:
+    """The current limit and the mode lag exactly as the switch does.
+
+    The rule was written for a boolean switch. Reusing it for a
+    milliamp figure and a mode string is the point: all three read
+    stale from the last poll while a change is in flight.
+    """
+    # A requested current, charger still reporting the old one.
+    value, keep = payload.resolve_optimistic(16000, 6521, False)
+    assert value == 16000
+    assert keep is True
+
+    # The charger has caught up.
+    value, keep = payload.resolve_optimistic(16000, 16000, False)
+    assert value == 16000
+    assert keep is False
+
+    # Held too long: reality wins even though it disagrees.
+    value, keep = payload.resolve_optimistic(16000, 6521, True)
+    assert value == 6521
+    assert keep is False
+
+
+def test_optimistic_rule_handles_mode_strings() -> None:
+    """Same rule, applied to the operation mode selector."""
+    value, keep = payload.resolve_optimistic("eco", "fast", False)
+    assert value == "eco"
+    assert keep is True
+
+    value, keep = payload.resolve_optimistic("eco", "eco", False)
+    assert value == "eco"
+    assert keep is False
+
+
+def test_optimistic_rule_treats_zero_as_a_real_value() -> None:
+    """Zero is falsy but is a legitimate reading, not an absence."""
+    value, keep = payload.resolve_optimistic(0, 6521, False)
+    assert value == 0
+    assert keep is True
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

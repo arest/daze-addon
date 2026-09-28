@@ -11,11 +11,13 @@ from __future__ import annotations
 # @property methods by design.
 # pyright: reportIncompatibleVariableOverride=false
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.number import NumberEntity
 from homeassistant.const import EntityCategory, UnitOfElectricCurrent
+from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -25,9 +27,18 @@ from .api import (
     ApiCommandRejectedError,
     ApiError,
 )
-from .const import DOMAIN, INLINE_COMMAND_ATTEMPTS
+from .const import (
+    DOMAIN,
+    INLINE_COMMAND_ATTEMPTS,
+    OPTIMISTIC_STATE_TIMEOUT,
+    POST_COMMAND_REFRESH_DELAY,
+)
 from .coordinator import DazeDataUpdateCoordinator
-from .payload import max_charging_current, min_charging_current
+from .payload import (
+    max_charging_current,
+    min_charging_current,
+    resolve_optimistic,
+)
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -75,6 +86,9 @@ class DazeWallboxNumberEntity(
         self._serial_number = serial_number
         self._attr_unique_id = f"{serial_number}_max_charging_current"
         self._attr_device_info = device_info
+        self._optimistic_value: int | None = None
+        self._optimistic_since: float = 0.0
+        self._awaiting_retry: bool = False
 
     @property
     def native_min_value(self) -> float:
@@ -101,22 +115,78 @@ class DazeWallboxNumberEntity(
 
     @property
     def native_value(self) -> int | None:
-        """Return the current max charging current in mA."""
+        """Return the charging current limit in mA.
+
+        Shows the requested value while a change is in flight. The
+        charger takes seconds to adopt it, and a background retry can
+        take minutes, so reading the last poll would snap the slider
+        back to its old position and look like nothing happened.
+        """
+        value, keep = resolve_optimistic(
+            self._optimistic_value, self._reported_value, self._expired
+        )
+
+        if not keep:
+            self._optimistic_value = None
+
+        return value
+
+    @property
+    def _reported_value(self) -> int | None:
+        """Return what the charger last reported."""
         if self.coordinator.data is None:
             return None
 
-        # Primary field, then fallback
-        value = self.coordinator.data.get(
-            "maxExternalChargingCurrentInMilliAmps"
-        )
-        if value is not None:
-            return int(value)
-
-        value = self.coordinator.data.get("lastMaxChargingCurrent")
-        if value is not None:
-            return int(value)
+        for field in (
+            "maxExternalChargingCurrentInMilliAmps",
+            "lastMaxChargingCurrent",
+        ):
+            value = self.coordinator.data.get(field)
+            if value is not None:
+                return int(value)
 
         return None
+
+    @property
+    def _expired(self) -> bool:
+        """Whether a pending change has been shown for too long."""
+        if self._optimistic_value is None:
+            return True
+
+        # While a background retry is still running the request is
+        # genuinely outstanding, so keep showing it.
+        if self._awaiting_retry:
+            return False
+
+        held = time.monotonic() - self._optimistic_since
+        return held > OPTIMISTIC_STATE_TIMEOUT
+
+    def _show_requested(self, value: int, awaiting_retry: bool) -> None:
+        """Display a requested value and re-read the charger later."""
+        self._optimistic_value = value
+        self._optimistic_since = time.monotonic()
+        self._awaiting_retry = awaiting_retry
+        self.async_write_ha_state()
+        self.coordinator.async_schedule_refresh_in(POST_COMMAND_REFRESH_DELAY)
+
+    def _clear_requested(self, message: str) -> None:
+        """Drop a pending value and explain why."""
+        self._optimistic_value = None
+        self._awaiting_retry = False
+        self.async_write_ha_state()
+        self._notify_error(message)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Stop showing the request once the charger reports it."""
+        if (
+            self._optimistic_value is not None
+            and self._reported_value == self._optimistic_value
+        ):
+            self._optimistic_value = None
+            self._awaiting_retry = False
+
+        super()._handle_coordinator_update()
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the max charging current on the wallbox.
@@ -146,8 +216,7 @@ class DazeWallboxNumberEntity(
                 int_value,
                 attempts=INLINE_COMMAND_ATTEMPTS,
             )
-            await self.coordinator.async_request_refresh()
-            self.coordinator.async_schedule_settle_refresh()
+            self._show_requested(int_value, awaiting_retry=False)
         except ApiAuthError as err:
             _LOGGER.warning(
                 "Auth error setting max current on %s: %s",
@@ -172,8 +241,9 @@ class DazeWallboxNumberEntity(
                     ),
                     description=f"Setting the charging current to "
                     f"{int_value} mA",
-                    on_failure=self._notify_error,
+                    on_failure=self._clear_requested,
                 )
+                self._show_requested(int_value, awaiting_retry=True)
                 return
 
             _LOGGER.info(
