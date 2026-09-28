@@ -1,0 +1,498 @@
+"""Execute the real entity classes against a stubbed Home Assistant.
+
+The optimistic display logic lives in number.py, select.py and
+switch.py, which import Home Assistant and so had never been run by any
+test. That is precisely where the "I changed it and nothing happened"
+bug lived, so it is worth exercising directly.
+
+Home Assistant is replaced with the smallest stubs the entities
+actually use. The integration modules themselves are the real ones.
+
+Run with pytest, or standalone:
+
+    python3 tests/test_entities.py
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib.util
+import sys
+import types
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_DIR = ROOT / "custom_components" / "daze"
+
+
+# ------------------------------------------------------------------
+# Home Assistant stubs
+# ------------------------------------------------------------------
+
+
+class StubCoordinatorEntity:
+    """Stand-in for CoordinatorEntity.
+
+    The real class is generic, so subscripting has to work.
+    """
+
+    def __class_getitem__(cls, _item: Any) -> Any:
+        """Support CoordinatorEntity[DazeDataUpdateCoordinator]."""
+        return cls
+
+    def __init__(self, coordinator: Any) -> None:
+        self.coordinator = coordinator
+        self.hass = object()
+        self.state_writes = 0
+
+    def async_write_ha_state(self) -> None:
+        """Count frontend updates instead of performing one."""
+        self.state_writes += 1
+
+    def _handle_coordinator_update(self) -> None:
+        """Base implementation does nothing here."""
+        self.state_writes += 1
+
+
+class StubDataUpdateCoordinator:
+    """Stand-in for DataUpdateCoordinator.
+
+    The real class is generic, so subscripting has to work.
+    """
+
+    def __class_getitem__(cls, _item: Any) -> Any:
+        """Support DataUpdateCoordinator[DazeCoordinatorData]."""
+        return cls
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.data: dict[str, Any] | None = None
+        self.hass = object()
+        self.update_interval = None
+
+    async def async_request_refresh(self) -> None:
+        """No-op refresh."""
+
+
+def _module(name: str, **attributes: Any) -> types.ModuleType:
+    """Build a stub module with the given attributes."""
+    module = types.ModuleType(name)
+    for key, value in attributes.items():
+        setattr(module, key, value)
+    sys.modules[name] = module
+    return module
+
+
+def install_homeassistant_stubs() -> list[tuple[Any, Any, Any]]:
+    """Register the Home Assistant modules the entities import.
+
+    Returns:
+        The list of scheduled callbacks, so tests can fire them.
+
+    """
+    scheduled: list[tuple[Any, Any, Any]] = []
+
+    def async_call_later(hass: Any, delay: Any, action: Any) -> Any:
+        """Record a scheduled callback and return a canceller."""
+        entry = (hass, delay, action)
+        scheduled.append(entry)
+
+        def cancel() -> None:
+            if entry in scheduled:
+                scheduled.remove(entry)
+
+        return cancel
+
+    notifications: list[dict[str, Any]] = []
+
+    def async_create(
+        hass: Any, message: str, title: str = "", notification_id: str = ""
+    ) -> None:
+        """Record a notification."""
+        notifications.append({"message": message, "title": title})
+
+    _module("homeassistant")
+    _module("homeassistant.components")
+    _module(
+        "homeassistant.components.persistent_notification",
+        async_create=async_create,
+        _records=notifications,
+    )
+    _module("homeassistant.components.number", NumberEntity=object)
+    _module("homeassistant.components.select", SelectEntity=object)
+    _module("homeassistant.components.switch", SwitchEntity=object)
+    _module(
+        "homeassistant.components.sensor",
+        SensorDeviceClass=type("SensorDeviceClass", (), {}),
+        SensorEntity=object,
+        SensorEntityDescription=object,
+        SensorStateClass=type("SensorStateClass", (), {}),
+    )
+    _module(
+        "homeassistant.const",
+        EntityCategory=type("EntityCategory", (), {"CONFIG": "config"}),
+        UnitOfElectricCurrent=type(
+            "UnitOfElectricCurrent", (), {"MILLIAMPERE": "mA"}
+        ),
+    )
+    _module(
+        "homeassistant.core",
+        callback=lambda fn: fn,
+        HomeAssistant=object,
+    )
+    _module("homeassistant.config_entries", ConfigEntry=object)
+    _module(
+        "homeassistant.exceptions",
+        ConfigEntryAuthFailed=type(
+            "ConfigEntryAuthFailed", (Exception,), {}
+        ),
+        HomeAssistantError=type("HomeAssistantError", (Exception,), {}),
+    )
+    _module("homeassistant.helpers")
+    _module(
+        "homeassistant.helpers.aiohttp_client",
+        async_get_clientsession=lambda hass: None,
+    )
+    _module("homeassistant.helpers.event", async_call_later=async_call_later)
+    _module(
+        "homeassistant.helpers.device_registry",
+        DeviceInfo=dict,
+        async_get=lambda hass: None,
+    )
+    _module(
+        "homeassistant.helpers.update_coordinator",
+        CoordinatorEntity=StubCoordinatorEntity,
+        DataUpdateCoordinator=StubDataUpdateCoordinator,
+        UpdateFailed=type("UpdateFailed", (Exception,), {}),
+    )
+    _module("homeassistant.helpers.entity_platform", AddEntitiesCallback=object)
+    _module(
+        "homeassistant.helpers.restore_state", RestoreEntity=object
+    )
+    _module("homeassistant.helpers.config_validation", positive_int=int)
+
+    return scheduled
+
+
+SCHEDULED = install_homeassistant_stubs()
+
+
+def _load_package() -> types.ModuleType:
+    """Load the integration package without running its __init__."""
+    package = types.ModuleType("daze_entities_under_test")
+    package.__path__ = [str(PACKAGE_DIR)]
+    sys.modules["daze_entities_under_test"] = package
+
+    for name in ("const", "payload", "models"):
+        spec = importlib.util.spec_from_file_location(
+            f"daze_entities_under_test.{name}", PACKAGE_DIR / f"{name}.py"
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[f"daze_entities_under_test.{name}"] = module
+        spec.loader.exec_module(module)
+
+    spec = importlib.util.spec_from_file_location(
+        "daze_entities_under_test.api",
+        PACKAGE_DIR / "api" / "__init__.py",
+        submodule_search_locations=[str(PACKAGE_DIR / "api")],
+    )
+    assert spec and spec.loader
+    api_module = importlib.util.module_from_spec(spec)
+    sys.modules["daze_entities_under_test.api"] = api_module
+    spec.loader.exec_module(api_module)
+
+    for name in ("coordinator", "number", "select"):
+        spec = importlib.util.spec_from_file_location(
+            f"daze_entities_under_test.{name}", PACKAGE_DIR / f"{name}.py"
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[f"daze_entities_under_test.{name}"] = module
+        spec.loader.exec_module(module)
+
+    return package
+
+
+_load_package()
+
+api = sys.modules["daze_entities_under_test.api"]
+number_module = sys.modules["daze_entities_under_test.number"]
+select_module = sys.modules["daze_entities_under_test.select"]
+notifications = sys.modules[
+    "homeassistant.components.persistent_notification"
+]._records
+
+
+# ------------------------------------------------------------------
+# Test doubles
+# ------------------------------------------------------------------
+
+
+class FakeCoordinator(StubDataUpdateCoordinator):
+    """Records what the entity asks the coordinator to do."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        super().__init__()
+        self.data = data
+        self.refresh_delays: list[int] = []
+        self.background: list[dict[str, Any]] = []
+
+    def async_schedule_refresh_in(self, delay: int) -> None:
+        """Record a delayed refresh."""
+        self.refresh_delays.append(delay)
+
+    def async_schedule_settle_refresh(self) -> None:
+        """Record a settle refresh."""
+        self.refresh_delays.append(-1)
+
+    def async_retry_in_background(
+        self, key: str, action: Any, description: str, on_failure: Any = None
+    ) -> None:
+        """Record a background retry request."""
+        self.background.append(
+            {
+                "key": key,
+                "action": action,
+                "description": description,
+                "on_failure": on_failure,
+            }
+        )
+
+    def async_cancel_background_retry(self, key: str) -> None:
+        """Drop a recorded retry."""
+        self.background = [b for b in self.background if b["key"] != key]
+
+
+class FakeApi:
+    """Records command calls and can be told to fail."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls: list[tuple[str, Any]] = []
+
+    async def async_set_max_charging_current(
+        self, serial: str, current_ma: int, attempts: int = 8
+    ) -> dict:
+        """Record and optionally fail."""
+        self.calls.append(("current", current_ma))
+        if self.error is not None:
+            raise self.error
+        return {}
+
+    async def async_set_eco_mode(
+        self, serial: str, eco_mode_enabled: bool, attempts: int = 8
+    ) -> dict:
+        """Record and optionally fail."""
+        self.calls.append(("eco", eco_mode_enabled))
+        if self.error is not None:
+            raise self.error
+        return {}
+
+
+BASE_DATA: dict[str, Any] = {
+    "maxExternalChargingCurrentInMilliAmps": 6521,
+    "lastMaxInstallationCurrent": 32000,
+    "lastACVoltageL1": 232,
+    "ecoModeEnabled": False,
+}
+
+
+def make_number(
+    data: dict[str, Any] | None = None, error: Exception | None = None
+) -> tuple[Any, FakeCoordinator, FakeApi]:
+    """Build a number entity wired to fakes."""
+    coordinator = FakeCoordinator(dict(data or BASE_DATA))
+    client = FakeApi(error)
+    entity = number_module.DazeWallboxNumberEntity(
+        coordinator=coordinator,
+        api_client=client,
+        serial_number="SER1",
+        device_info={},
+    )
+    return entity, coordinator, client
+
+
+def rpc_failure() -> Exception:
+    """Return the error the API raises when the link is down."""
+    return api.ApiCommandRejectedError("unreachable", code=101)
+
+
+def refused() -> Exception:
+    """Return the error the API raises for an invalid value."""
+    return api.ApiCommandRejectedError("out of range", code=369)
+
+
+# ------------------------------------------------------------------
+# The reported bug: changing the value appeared to do nothing
+# ------------------------------------------------------------------
+
+
+def test_new_current_is_shown_immediately_on_success() -> None:
+    """This is the bug: the slider snapped back to the old value.
+
+    The charger still reports 6521 until it adopts the change, so
+    reading the coordinator would revert the display.
+    """
+    entity, coordinator, client = make_number()
+
+    assert entity.native_value == 6521
+
+    asyncio.run(entity.async_set_native_value(16000))
+
+    assert client.calls == [("current", 16000)]
+    assert entity.native_value == 16000, "slider reverted to the old value"
+    assert coordinator.data["maxExternalChargingCurrentInMilliAmps"] == 6521
+
+
+def test_new_current_is_shown_while_a_retry_runs() -> None:
+    """An unreachable charger must not look like a no-op either.
+
+    Since the background retry returns without raising, nothing else
+    would tell the user their change is still pending.
+    """
+    notifications.clear()
+    entity, coordinator, _ = make_number(error=rpc_failure())
+
+    asyncio.run(entity.async_set_native_value(16000))
+
+    assert len(coordinator.background) == 1
+    assert entity.native_value == 16000
+    assert not notifications, "an in-flight retry must not raise an error"
+
+
+def test_display_returns_to_reality_once_the_charger_agrees() -> None:
+    """Holding the guess longer would mask later external changes."""
+    entity, coordinator, _ = make_number()
+
+    asyncio.run(entity.async_set_native_value(16000))
+    assert entity.native_value == 16000
+
+    coordinator.data["maxExternalChargingCurrentInMilliAmps"] = 16000
+    entity._handle_coordinator_update()
+
+    assert entity._optimistic_value is None
+    assert entity.native_value == 16000
+
+
+def test_display_is_dropped_when_every_retry_fails() -> None:
+    """A change that never landed must not be shown indefinitely."""
+    notifications.clear()
+    entity, coordinator, _ = make_number(error=rpc_failure())
+
+    asyncio.run(entity.async_set_native_value(16000))
+    assert entity.native_value == 16000
+
+    # Simulate the coordinator exhausting its background attempts.
+    coordinator.background[0]["on_failure"]("could not be delivered")
+
+    assert entity.native_value == 6521
+    assert len(notifications) == 1
+    assert "could not be delivered" in notifications[0]["message"]
+
+
+def test_a_refusal_is_reported_rather_than_retried() -> None:
+    """Out of range is final: retrying it wastes minutes."""
+    notifications.clear()
+    entity, coordinator, _ = make_number(error=refused())
+
+    asyncio.run(entity.async_set_native_value(32000))
+
+    assert coordinator.background == []
+    assert len(notifications) == 1
+    assert entity.native_value == 6521
+
+
+def test_setting_the_same_value_sends_nothing() -> None:
+    """Re-selecting the current value must not hit the API."""
+    entity, _, client = make_number()
+
+    asyncio.run(entity.async_set_native_value(6521))
+
+    assert client.calls == []
+
+
+def test_a_refresh_is_scheduled_rather_than_run_immediately() -> None:
+    """Refreshing at once reads the state from before the change."""
+    entity, coordinator, _ = make_number()
+
+    asyncio.run(entity.async_set_native_value(16000))
+
+    assert coordinator.refresh_delays == [10]
+
+
+def test_bounds_come_from_the_charger() -> None:
+    """The floor follows the 1500 W minimum at the measured voltage."""
+    entity, _, _ = make_number()
+
+    assert entity.native_min_value == 6500
+    assert entity.native_max_value == 32000
+
+
+# ------------------------------------------------------------------
+# The same behaviour on the mode selector
+# ------------------------------------------------------------------
+
+
+def make_select(
+    error: Exception | None = None,
+) -> tuple[Any, FakeCoordinator, FakeApi]:
+    """Build a select entity wired to fakes."""
+    coordinator = FakeCoordinator(dict(BASE_DATA))
+    client = FakeApi(error)
+    entity = select_module.DazeWallboxSelectEntity(
+        coordinator=coordinator,
+        api_client=client,
+        serial_number="SER1",
+        device_info={},
+    )
+    return entity, coordinator, client
+
+
+def test_new_mode_is_shown_immediately() -> None:
+    """The selector reverted for the same reason the slider did."""
+    entity, coordinator, client = make_select()
+
+    assert entity.current_option == "fast"
+
+    asyncio.run(entity.async_select_option("eco"))
+
+    assert client.calls == [("eco", True)]
+    assert entity.current_option == "eco"
+    assert coordinator.data["ecoModeEnabled"] is False
+
+
+def test_new_mode_is_held_while_a_retry_runs() -> None:
+    """An unreachable charger must not revert the selection."""
+    entity, coordinator, _ = make_select(error=rpc_failure())
+
+    asyncio.run(entity.async_select_option("eco"))
+
+    assert len(coordinator.background) == 1
+    assert entity.current_option == "eco"
+
+
+def _main() -> int:
+    """Run every test in this module and report results."""
+    tests = [
+        value
+        for name, value in sorted(globals().items())
+        if name.startswith("test_") and callable(value)
+    ]
+
+    failures = 0
+    for test in tests:
+        try:
+            test()
+        except Exception as err:  # noqa: BLE001 - standalone runner
+            failures += 1
+            print(f"FAIL {test.__name__}: {type(err).__name__}: {err}")
+        else:
+            print(f"ok   {test.__name__}")
+
+    print(f"\n{len(tests) - failures} passed, {failures} failed")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main())

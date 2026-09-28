@@ -24,6 +24,7 @@ STANDALONE = (
     "test_auth_getuser.py",
     "test_payload.py",
     "test_qa_invariants.py",
+    "test_entities.py",
 )
 
 
