@@ -40,12 +40,14 @@ from .const import (
 from .coordinator import DazeDataUpdateCoordinator
 from .payload import (
     POWER_STEP_W,
+    grid_cap_advice,
     max_charging_current,
     max_charging_power,
     milliamps_to_watts,
     min_charging_current,
     min_charging_power,
     resolve_optimistic,
+    validate_charging_current,
     watts_to_milliamps,
 )
 
@@ -213,6 +215,18 @@ class DazeWallboxNumberEntity(
                 int_value,
             )
             return
+
+        # Stop here rather than spending a round trip on a value the
+        # charger is known to reject.
+        problem = validate_charging_current(int_value, self.coordinator.data)
+        if problem is not None:
+            _LOGGER.info("Refusing to send %d mA: %s", int_value, problem)
+            self._notify_error(problem)
+            return
+
+        advice = grid_cap_advice(int_value, self.coordinator.data)
+        if advice is not None:
+            _LOGGER.info("%s", advice)
 
         try:
             _LOGGER.info(
@@ -396,6 +410,20 @@ class DazeWallboxPowerEntity(
                 milliamps,
             )
             return
+
+        problem = validate_charging_current(milliamps, self.coordinator.data)
+        if problem is not None:
+            _LOGGER.info("Refusing to send %d W: %s", watts, problem)
+            self._notify_error(
+                f"{watts} W is outside the range this charger accepts "
+                f"({min_charging_power(self.coordinator.data)} to "
+                f"{max_charging_power(self.coordinator.data)} W)."
+            )
+            return
+
+        advice = grid_cap_advice(milliamps, self.coordinator.data)
+        if advice is not None:
+            _LOGGER.info("%s", advice)
 
         try:
             _LOGGER.info(

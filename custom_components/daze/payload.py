@@ -411,3 +411,99 @@ def max_charging_power(data: dict[str, Any] | None) -> int:
     """
     exact = milliamps_to_watts(max_charging_current(data), data)
     return int(exact // POWER_STEP_W * POWER_STEP_W)
+
+
+def grid_power_limit(data: dict[str, Any] | None) -> int | None:
+    """Return the grid supply cap in watts, if the charger reports one.
+
+    supplyGridMaxPower is the household supply the charger balances
+    against when dynamic power management is on. It does not make the
+    API reject a higher setting: a charger reporting 3000 W here
+    accepted a 7552 W limit without complaint. What it does mean is
+    that the charger will throttle the actual draw, so asking for more
+    achieves nothing.
+
+    Treated as advisory for that reason, not as a hard bound.
+
+    Args:
+        data: The merged payload, or None.
+
+    Returns:
+        The cap in watts, or None if none is reported or it is not in
+        force.
+
+    """
+    if not data or not data.get("dpm"):
+        return None
+
+    value = data.get("supplyGridMaxPower")
+    if isinstance(value, (int, float)) and value > 0:
+        return int(value)
+
+    return None
+
+
+def validate_charging_current(
+    milliamps: int, data: dict[str, Any] | None
+) -> str | None:
+    """Check a current against the bounds before it is sent.
+
+    The API answers a value outside its range with HTTP 422 and
+    MaxExternalChargingCurrentOutOfRange after a round trip. The bounds
+    are already known locally, so the round trip is avoidable and the
+    user gets an immediate, specific answer instead.
+
+    Args:
+        milliamps: The requested current.
+        data: The merged payload, or None.
+
+    Returns:
+        None if the value is acceptable, otherwise an explanation.
+
+    """
+    floor = min_charging_current(data)
+    ceiling = max_charging_current(data)
+    volts = supply_voltage(data)
+
+    if milliamps < floor:
+        return (
+            f"{milliamps} mA is below the {floor} mA minimum this charger "
+            f"accepts. It enforces a {MIN_CHARGING_POWER_W} W floor, which "
+            f"is {floor} mA at {volts} V."
+        )
+
+    if milliamps > ceiling:
+        return (
+            f"{milliamps} mA is above the {ceiling} mA the installation is "
+            f"rated for."
+        )
+
+    return None
+
+
+def grid_cap_advice(milliamps: int, data: dict[str, Any] | None) -> str | None:
+    """Warn when a value exceeds the grid supply the charger balances to.
+
+    Not a rejection: the charger accepts the setting and then limits
+    what it actually draws.
+
+    Args:
+        milliamps: The requested current.
+        data: The merged payload, or None.
+
+    Returns:
+        A note if the request exceeds the grid cap, otherwise None.
+
+    """
+    cap = grid_power_limit(data)
+    if cap is None:
+        return None
+
+    requested = milliamps_to_watts(milliamps, data)
+    if requested <= cap:
+        return None
+
+    return (
+        f"Requested {requested} W, but this charger balances against a "
+        f"{cap} W supply limit, so it will not draw more than that."
+    )

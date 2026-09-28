@@ -730,6 +730,44 @@ def test_power_round_trips_within_a_step() -> None:
         assert abs(back - watts) <= 30, (watts, milliamps, back)
 
 
+
+def test_validation_matches_the_measured_boundaries() -> None:
+    """Reproduces the ladder result: 6400 rejected, 6521 accepted."""
+    data = {"lastACVoltageL1": 232, "lastMaxInstallationCurrent": 32000}
+
+    assert payload.validate_charging_current(6000, data) is not None
+    assert payload.validate_charging_current(6400, data) is not None
+    assert payload.validate_charging_current(6521, data) is None
+    assert payload.validate_charging_current(32000, data) is None
+    assert payload.validate_charging_current(40000, data) is not None
+
+
+def test_grid_cap_is_reported_only_when_in_force() -> None:
+    """Without dynamic power management the cap does not apply."""
+    on = {"supplyGridMaxPower": 3000, "dpm": True}
+    off = {"supplyGridMaxPower": 3000, "dpm": False}
+
+    assert payload.grid_power_limit(on) == 3000
+    assert payload.grid_power_limit(off) is None
+    assert payload.grid_power_limit({}) is None
+    assert payload.grid_power_limit(None) is None
+
+
+def test_grid_cap_advice_only_fires_above_the_cap() -> None:
+    """Silence below it; a note above it, never an error."""
+    data = {
+        "lastACVoltageL1": 236,
+        "supplyGridMaxPower": 3000,
+        "dpm": True,
+        "lastMaxInstallationCurrent": 32000,
+    }
+
+    assert payload.grid_cap_advice(10000, data) is None
+    advice = payload.grid_cap_advice(16900, data)
+    assert advice is not None
+    assert "3000 W" in advice
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

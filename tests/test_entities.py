@@ -571,6 +571,105 @@ def test_power_and_current_entities_agree() -> None:
     assert power.native_value == 3988
 
 
+
+# ------------------------------------------------------------------
+# Refusing bad values without a round trip
+# ------------------------------------------------------------------
+
+
+GRID_LIMITED: dict[str, Any] = {
+    "maxExternalChargingCurrentInMilliAmps": 16900,
+    "lastMaxInstallationCurrent": 32000,
+    "lastACVoltageL1": 236,
+    "supplyGridMaxPower": 3000,
+    "dpm": True,
+}
+
+
+def test_a_current_below_the_floor_is_never_sent() -> None:
+    """The API answers 422 for this; the bounds are already known."""
+    notifications.clear()
+    entity, _, client = make_number(data=GRID_LIMITED)
+
+    asyncio.run(entity.async_set_native_value(6000))
+
+    assert client.calls == [], "a known-bad value must not reach the API"
+    assert len(notifications) == 1
+    assert "below" in notifications[0]["message"]
+
+
+def test_a_current_above_the_installation_rating_is_never_sent() -> None:
+    """Same, at the other end."""
+    notifications.clear()
+    entity, _, client = make_number(data=GRID_LIMITED)
+
+    asyncio.run(entity.async_set_native_value(40000))
+
+    assert client.calls == []
+    assert len(notifications) == 1
+    assert "above" in notifications[0]["message"]
+
+
+def test_a_valid_current_is_still_sent() -> None:
+    """The guard must not block values the charger accepts."""
+    notifications.clear()
+    entity, _, client = make_number(data=GRID_LIMITED)
+
+    asyncio.run(entity.async_set_native_value(20000))
+
+    assert client.calls == [("current", 20000)]
+    assert not notifications
+
+
+def test_exceeding_the_grid_cap_is_advisory_not_blocking() -> None:
+    """The charger accepts it and throttles the draw instead.
+
+    A 7552 W limit was accepted by a charger reporting a 3000 W supply
+    cap, so refusing to send it would be wrong.
+    """
+    notifications.clear()
+    entity, _, client = make_number(data=GRID_LIMITED)
+
+    asyncio.run(entity.async_set_native_value(32000))
+
+    assert client.calls == [("current", 32000)]
+    assert not notifications, "the grid cap must not raise an error"
+
+
+def test_power_entity_clamps_rather_than_refusing() -> None:
+    """A wattage outside the range is corrected, not rejected.
+
+    watts_to_milliamps clamps before the value is validated, which is
+    deliberate: a round figure near a boundary should charge at the
+    nearest legal rate rather than fail. The validation behind it is a
+    guard against inconsistent bounds, not the primary path.
+    """
+    notifications.clear()
+    entity, coordinator, client = make_power()
+
+    asyncio.run(entity.async_set_native_value(500))
+
+    floor_ma = number_module.min_charging_current(coordinator.data)
+    assert client.calls == [("current", floor_ma)]
+    assert not notifications
+
+
+def test_power_entity_never_sends_below_the_charger_floor() -> None:
+    """Whatever is asked for, the sent value must be acceptable."""
+    for requested in (0, 100, 500, 1000, 1400):
+        notifications.clear()
+        entity, coordinator, client = make_power()
+
+        asyncio.run(entity.async_set_native_value(requested))
+
+        assert len(client.calls) == 1, requested
+        sent = client.calls[0][1]
+        assert (
+            number_module.validate_charging_current(sent, coordinator.data)
+            is None
+        ), (requested, sent)
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [
