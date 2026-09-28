@@ -12,7 +12,6 @@ from __future__ import annotations
 # @property methods by design.
 # pyright: reportIncompatibleVariableOverride=false
 import logging
-import time
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components import persistent_notification
@@ -30,12 +29,11 @@ from .api import (
 from .const import (
     DOMAIN,
     INLINE_COMMAND_ATTEMPTS,
-    MAX_OPTIMISTIC_HOLD,
-    OPTIMISTIC_STATE_TIMEOUT,
     POST_COMMAND_REFRESH_DELAY,
 )
 from .coordinator import DazeDataUpdateCoordinator
-from .payload import is_charge_enabled, resolve_optimistic
+from .optimistic import OptimisticState
+from .payload import is_charge_enabled
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -75,9 +73,7 @@ class DazeWallboxSwitchEntity(
         self._serial_number = serial_number
         self._attr_unique_id = f"{serial_number}_charge_switch"
         self._attr_device_info = device_info
-        self._optimistic_state: bool | None = None
-        self._optimistic_since: float = 0.0
-        self._awaiting_retry: bool = False
+        self._optimistic = OptimisticState(tolerance=0)
 
     @property
     def is_on(self) -> bool | None:
@@ -97,34 +93,12 @@ class DazeWallboxSwitchEntity(
             else None
         )
 
-        value, keep = resolve_optimistic(
-            self._optimistic_state, actual, self._optimistic_expired
-        )
-
-        if not keep:
-            self._optimistic_state = None
-
-        return value
-
-    @property
-    def _optimistic_expired(self) -> bool:
-        """Whether the optimistic value has been held too long."""
-        if self._optimistic_state is None:
-            return True
-
-        held = time.monotonic() - self._optimistic_since
-
-        if self._awaiting_retry:
-            # A queued retry means the request is still outstanding.
-            # Capped, because a superseded chain never reports back.
-            return held > MAX_OPTIMISTIC_HOLD
-
-        return held > OPTIMISTIC_STATE_TIMEOUT
+        return self._optimistic.resolve(actual)
 
     @property
     def assumed_state(self) -> bool:
         """Tell the frontend when the shown state is a guess."""
-        return self._optimistic_state is not None
+        return self._optimistic.pending
 
     def _set_optimistic(
         self, value: bool, awaiting_retry: bool = False
@@ -135,9 +109,7 @@ class DazeWallboxSwitchEntity(
         cloud still reports the old state, so the entity would flip
         back before settling.
         """
-        self._optimistic_state = value
-        self._optimistic_since = time.monotonic()
-        self._awaiting_retry = awaiting_retry
+        self._optimistic.request(value, awaiting_retry)
         self.async_write_ha_state()
         self.coordinator.async_schedule_refresh_in(
             POST_COMMAND_REFRESH_DELAY
@@ -146,16 +118,12 @@ class DazeWallboxSwitchEntity(
     @callback
     def _handle_coordinator_update(self) -> None:
         """Drop the guess once the charger agrees with it."""
-        if self._optimistic_state is not None:
-            actual = (
-                is_charge_enabled(self.coordinator.data)
-                if self.coordinator.data is not None
-                else None
-            )
-            if actual == self._optimistic_state or self._optimistic_expired:
-                self._optimistic_state = None
-                self._awaiting_retry = False
-
+        actual = (
+            is_charge_enabled(self.coordinator.data)
+            if self.coordinator.data is not None
+            else None
+        )
+        self._optimistic.settle(actual)
         super()._handle_coordinator_update()
 
     async def async_turn_on(self, **kwargs: Any) -> None:

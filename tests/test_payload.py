@@ -414,46 +414,6 @@ def test_waiting_state_is_a_declared_sensor_option() -> None:
 # ------------------------------------------------------------------
 
 
-def test_no_guess_reports_the_charger() -> None:
-    """With nothing commanded, the charger's reading is the answer."""
-    assert payload.resolve_optimistic(None, True, False) == (True, False)
-    assert payload.resolve_optimistic(None, False, False) == (False, False)
-    assert payload.resolve_optimistic(None, None, False) == (None, False)
-
-
-def test_guess_wins_while_the_cloud_still_reports_the_old_state() -> None:
-    """This is the flip-back the optimistic state exists to prevent."""
-    value, keep = payload.resolve_optimistic(True, False, False)
-    assert value is True
-    assert keep is True
-
-
-def test_guess_is_dropped_once_the_charger_agrees() -> None:
-    """Holding it longer than needed would delay real changes."""
-    value, keep = payload.resolve_optimistic(True, True, False)
-    assert value is True
-    assert keep is False
-
-
-def test_guess_is_abandoned_when_it_expires() -> None:
-    """A command that silently failed must not leave the UI lying.
-
-    Once the window passes, the charger's reading wins even though it
-    contradicts what was commanded.
-    """
-    value, keep = payload.resolve_optimistic(True, False, True)
-    assert value is False
-    assert keep is False
-
-
-def test_guess_survives_a_missing_reading() -> None:
-    """An unknown reading is not agreement, so keep the guess."""
-    value, keep = payload.resolve_optimistic(False, None, False)
-    assert value is False
-    assert keep is True
-
-
-
 # ------------------------------------------------------------------
 # Charging current ceiling
 # ------------------------------------------------------------------
@@ -574,48 +534,6 @@ def test_measured_boundary_is_reproduced() -> None:
         assert value < floor, value
     for value in accepted:
         assert value >= floor, value
-
-
-
-def test_optimistic_rule_handles_non_boolean_values() -> None:
-    """The current limit and the mode lag exactly as the switch does.
-
-    The rule was written for a boolean switch. Reusing it for a
-    milliamp figure and a mode string is the point: all three read
-    stale from the last poll while a change is in flight.
-    """
-    # A requested current, charger still reporting the old one.
-    value, keep = payload.resolve_optimistic(16000, 6521, False)
-    assert value == 16000
-    assert keep is True
-
-    # The charger has caught up.
-    value, keep = payload.resolve_optimistic(16000, 16000, False)
-    assert value == 16000
-    assert keep is False
-
-    # Held too long: reality wins even though it disagrees.
-    value, keep = payload.resolve_optimistic(16000, 6521, True)
-    assert value == 6521
-    assert keep is False
-
-
-def test_optimistic_rule_handles_mode_strings() -> None:
-    """Same rule, applied to the operation mode selector."""
-    value, keep = payload.resolve_optimistic("eco", "fast", False)
-    assert value == "eco"
-    assert keep is True
-
-    value, keep = payload.resolve_optimistic("eco", "eco", False)
-    assert value == "eco"
-    assert keep is False
-
-
-def test_optimistic_rule_treats_zero_as_a_real_value() -> None:
-    """Zero is falsy but is a legitimate reading, not an absence."""
-    value, keep = payload.resolve_optimistic(0, 6521, False)
-    assert value == 0
-    assert keep is True
 
 
 

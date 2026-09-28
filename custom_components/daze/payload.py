@@ -190,48 +190,6 @@ def is_charge_enabled(data: dict[str, Any]) -> bool | None:
     return str(status).lower() in ACTIVE_STATUSES
 
 
-def resolve_optimistic(
-    optimistic: Any | None,
-    actual: Any | None,
-    expired: bool,
-) -> tuple[Any | None, bool]:
-    """Decide what a switch should report, and whether to keep guessing.
-
-    A command takes effect at the charger several seconds after it is
-    accepted. Reporting the charger's reading during that window shows
-    the old state and makes the toggle appear to flip back, so the
-    commanded value is reported instead until reality catches up.
-
-    The guess is dropped as soon as the charger agrees, and abandoned
-    once it has been held too long, so a command that silently failed
-    cannot leave the UI wrong indefinitely.
-
-    Works for any value, not just a boolean: a charging current or an
-    operation mode lags the same way a switch does.
-
-    Args:
-        optimistic: The value the last command asked for, or None.
-        actual: What the charger currently reports, or None.
-        expired: Whether the optimistic value has been held too long.
-
-    Returns:
-        A tuple of the value to report and whether to keep holding the
-        optimistic value.
-
-    """
-    if optimistic is None:
-        return actual, False
-
-    if expired:
-        return actual, False
-
-    if actual == optimistic:
-        # Reality caught up; stop guessing.
-        return actual, False
-
-    return optimistic, True
-
-
 # The charging current ceiling comes from the installation rating.
 #
 # sccLimit was tried first and is wrong: on a live charger it read

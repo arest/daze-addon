@@ -92,6 +92,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a Daze Wallbox config entry."""
     _LOGGER.debug("Unloading Daze Wallbox config entry %s", entry.entry_id)
 
+    # Stop anything the coordinator has scheduled before tearing the
+    # entry down. An options change reloads the entry, so without this
+    # the old coordinator keeps firing against a closed client.
+    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if entry_data is not None:
+        coordinator: DazeDataUpdateCoordinator = entry_data["coordinator"]
+        coordinator.async_shutdown_timers()
+
     # Unload entity platforms
     unload_ok = await hass.config_entries.async_unload_platforms(
         entry, PLATFORMS

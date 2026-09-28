@@ -110,6 +110,7 @@ class DazeDataUpdateCoordinator(
         self._next_session_fetch: float = 0.0
         self._sessions_missing_logged: bool = False
         self._pending_retries: dict[str, Callable[[], None]] = {}
+        self._pending_timers: set[Callable[[], None]] = set()
 
         super().__init__(
             hass,
@@ -247,11 +248,64 @@ class DazeDataUpdateCoordinator(
         )
         _schedule(attempts[0])
 
+    def async_shutdown_timers(self) -> None:
+        """Cancel every callback this coordinator has scheduled.
+
+        Settle refreshes and background retries outlive the code that
+        scheduled them. Unloading the entry, which also happens on
+        every options change, otherwise leaves them firing against a
+        discarded coordinator and a closed API client. Home Assistant
+        reports those as lingering timers.
+        """
+        for cancel in list(self._pending_timers):
+            cancel()
+        self._pending_timers.clear()
+
+        for key in list(self._pending_retries):
+            self.async_cancel_background_retry(key)
+
+        _LOGGER.debug("Cancelled pending timers for %s", self._serial_number)
+
     def async_cancel_background_retry(self, key: str) -> None:
         """Drop any pending background retry for a command."""
         cancel = self._pending_retries.pop(key, None)
         if cancel is not None:
             cancel()
+
+    def _schedule_tracked_refresh(self, delay: int, reason: str) -> None:
+        """Schedule one refresh and keep a handle so it can be cancelled.
+
+        Each call gets its own scope. Scheduling inside a loop and
+        closing over the loop variable would leave every callback
+        discarding the last handle rather than its own.
+
+        Args:
+            delay: Seconds until the refresh runs.
+            reason: Used in the debug log.
+
+        """
+        handle: list[Any] = []
+
+        async def _refresh(_now: Any) -> None:
+            """Re-read the charger."""
+            if handle:
+                self._pending_timers.discard(handle[0])
+
+            _LOGGER.debug(
+                "%s refresh for %s at +%ss",
+                reason,
+                self._serial_number,
+                delay,
+            )
+            # The charging current and eco mode live only in the EVSE
+            # record, which is cached. Without dropping that cache the
+            # refresh re-reads a stale copy and the entity reverts.
+            self._next_evse_fetch = 0.0
+            await self.async_request_refresh()
+
+        cancel = async_call_later(self.hass, delay, _refresh)
+        handle.append(cancel)
+        self._pending_timers.add(cancel)
 
     def async_schedule_refresh_in(self, delay: int) -> None:
         """Re-read the charger once, after a delay.
@@ -262,23 +316,8 @@ class DazeDataUpdateCoordinator(
 
         Scheduled, not awaited: the caller returns immediately.
         """
-
-        # The charging current and eco mode live only in the EVSE
-        # record, which is cached. Without dropping that cache the
-        # refresh re-reads a stale copy and the entity reverts.
         self._next_evse_fetch = 0.0
-
-        async def _refresh(_now: Any) -> None:
-            """Ask the coordinator to re-read the charger."""
-            _LOGGER.debug(
-                "Post-command refresh for %s at +%ss",
-                self._serial_number,
-                delay,
-            )
-            self._next_evse_fetch = 0.0
-            await self.async_request_refresh()
-
-        async_call_later(self.hass, delay, _refresh)
+        self._schedule_tracked_refresh(delay, "Post-command")
 
     def async_schedule_settle_refresh(self) -> None:
         """Re-read the charger a few times after a command.
@@ -293,18 +332,7 @@ class DazeDataUpdateCoordinator(
         self._next_evse_fetch = 0.0
 
         for delay in SETTLE_REFRESH_DELAYS:
-
-            async def _refresh(_now: Any, _delay: int = delay) -> None:
-                """Ask the coordinator to re-read the charger."""
-                _LOGGER.debug(
-                    "Settle refresh for %s at +%ss",
-                    self._serial_number,
-                    _delay,
-                )
-                self._next_evse_fetch = 0.0
-                await self.async_request_refresh()
-
-            async_call_later(self.hass, delay, _refresh)
+            self._schedule_tracked_refresh(delay, "Settle")
 
     async def _async_update_data(self) -> DazeCoordinatorData:
         """Fetch the latest socket remote info and session data.

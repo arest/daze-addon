@@ -11,7 +11,6 @@ from __future__ import annotations
 # @property methods by design.
 # pyright: reportIncompatibleVariableOverride=false
 import logging
-import time
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components import persistent_notification
@@ -34,11 +33,10 @@ from .api import (
 from .const import (
     DOMAIN,
     INLINE_COMMAND_ATTEMPTS,
-    MAX_OPTIMISTIC_HOLD,
-    OPTIMISTIC_STATE_TIMEOUT,
     POST_COMMAND_REFRESH_DELAY,
 )
 from .coordinator import DazeDataUpdateCoordinator
+from .optimistic import OptimisticState
 from .payload import (
     POWER_STEP_W,
     grid_cap_advice,
@@ -47,7 +45,6 @@ from .payload import (
     milliamps_to_watts,
     min_charging_current,
     min_charging_power,
-    resolve_optimistic,
     validate_charging_current,
     watts_to_milliamps,
 )
@@ -98,9 +95,7 @@ class DazeWallboxNumberEntity(
         self._serial_number = serial_number
         self._attr_unique_id = f"{serial_number}_max_charging_current"
         self._attr_device_info = device_info
-        self._optimistic_value: int | None = None
-        self._optimistic_since: float = 0.0
-        self._awaiting_retry: bool = False
+        self._optimistic = OptimisticState()
 
     @property
     def native_min_value(self) -> float:
@@ -134,14 +129,7 @@ class DazeWallboxNumberEntity(
         take minutes, so reading the last poll would snap the slider
         back to its old position and look like nothing happened.
         """
-        value, keep = resolve_optimistic(
-            self._optimistic_value, self._reported_value, self._expired
-        )
-
-        if not keep:
-            self._optimistic_value = None
-
-        return value
+        return self._optimistic.resolve(self._reported_value)
 
     @property
     def _reported_value(self) -> int | None:
@@ -159,48 +147,22 @@ class DazeWallboxNumberEntity(
 
         return None
 
-    @property
-    def _expired(self) -> bool:
-        """Whether a pending change has been shown for too long."""
-        if self._optimistic_value is None:
-            return True
-
-        # While a background retry is still running the request is
-        # genuinely outstanding, so keep showing it.
-        held = time.monotonic() - self._optimistic_since
-
-        if self._awaiting_retry:
-            # Capped: a superseded retry chain never reports back, so
-            # without this the value would stick until a restart.
-            return held > MAX_OPTIMISTIC_HOLD
-
-        return held > OPTIMISTIC_STATE_TIMEOUT
-
     def _show_requested(self, value: int, awaiting_retry: bool) -> None:
         """Display a requested value and re-read the charger later."""
-        self._optimistic_value = value
-        self._optimistic_since = time.monotonic()
-        self._awaiting_retry = awaiting_retry
+        self._optimistic.request(value, awaiting_retry)
         self.async_write_ha_state()
         self.coordinator.async_schedule_refresh_in(POST_COMMAND_REFRESH_DELAY)
 
     def _clear_requested(self, message: str) -> None:
         """Drop a pending value and explain why."""
-        self._optimistic_value = None
-        self._awaiting_retry = False
+        self._optimistic.clear()
         self.async_write_ha_state()
         self._notify_error(message)
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Stop showing the request once the charger reports it."""
-        if (
-            self._optimistic_value is not None
-            and self._reported_value == self._optimistic_value
-        ):
-            self._optimistic_value = None
-            self._awaiting_retry = False
-
+        self._optimistic.settle(self._reported_value)
         super()._handle_coordinator_update()
 
     async def async_set_native_value(self, value: float) -> None:
@@ -345,9 +307,9 @@ class DazeWallboxPowerEntity(
         self._serial_number = serial_number
         self._attr_unique_id = f"{serial_number}_max_charging_power"
         self._attr_device_info = device_info
-        self._optimistic_watts: int | None = None
-        self._optimistic_since: float = 0.0
-        self._awaiting_retry: bool = False
+        # Watts are derived from a fluctuating voltage, so the
+        # charger's reading is compared within one step.
+        self._optimistic = OptimisticState(tolerance=POWER_STEP_W)
 
     @property
     def native_min_value(self) -> float:
@@ -362,14 +324,7 @@ class DazeWallboxPowerEntity(
     @property
     def native_value(self) -> int | None:
         """Return the configured limit expressed in watts."""
-        value, keep = resolve_optimistic(
-            self._optimistic_watts, self._reported_watts, self._expired
-        )
-
-        if not keep:
-            self._optimistic_watts = None
-
-        return value
+        return self._optimistic.resolve(self._reported_watts)
 
     @property
     def _reported_watts(self) -> int | None:
@@ -386,19 +341,6 @@ class DazeWallboxPowerEntity(
                 return milliamps_to_watts(int(value), self.coordinator.data)
 
         return None
-
-    @property
-    def _expired(self) -> bool:
-        """Whether a pending change has been shown for too long."""
-        if self._optimistic_watts is None:
-            return True
-
-        held = time.monotonic() - self._optimistic_since
-
-        if self._awaiting_retry:
-            return held > MAX_OPTIMISTIC_HOLD
-
-        return held > OPTIMISTIC_STATE_TIMEOUT
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the limit from a power figure.
@@ -486,35 +428,20 @@ class DazeWallboxPowerEntity(
 
     def _show_requested(self, watts: int, awaiting_retry: bool) -> None:
         """Display a requested power and re-read the charger later."""
-        self._optimistic_watts = watts
-        self._optimistic_since = time.monotonic()
-        self._awaiting_retry = awaiting_retry
+        self._optimistic.request(watts, awaiting_retry)
         self.async_write_ha_state()
         self.coordinator.async_schedule_refresh_in(POST_COMMAND_REFRESH_DELAY)
 
     def _clear_requested(self, message: str) -> None:
         """Drop a pending power and explain why."""
-        self._optimistic_watts = None
-        self._awaiting_retry = False
+        self._optimistic.clear()
         self.async_write_ha_state()
         self._notify_error(message)
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Stop showing the request once the charger reports it."""
-        reported = self._reported_watts
-        if (
-            self._optimistic_watts is not None
-            and reported is not None
-            # Compared with tolerance: both sides are derived from the
-            # live voltage, so a 1 V drift between the command and the
-            # next poll changes the figure and exact equality never
-            # holds.
-            and abs(reported - self._optimistic_watts) <= POWER_STEP_W
-        ):
-            self._optimistic_watts = None
-            self._awaiting_retry = False
-
+        self._optimistic.settle(self._reported_watts)
         super()._handle_coordinator_update()
 
     def _notify_error(self, message: str) -> None:

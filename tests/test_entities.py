@@ -220,6 +220,7 @@ _load_package()
 api = sys.modules["daze_entities_under_test.api"]
 number_module = sys.modules["daze_entities_under_test.number"]
 select_module = sys.modules["daze_entities_under_test.select"]
+optimistic_module = sys.modules["daze_entities_under_test.optimistic"]
 notifications = sys.modules[
     "homeassistant.components.persistent_notification"
 ]._records
@@ -372,7 +373,7 @@ def test_display_returns_to_reality_once_the_charger_agrees() -> None:
     coordinator.data["maxExternalChargingCurrentInMilliAmps"] = 16000
     entity._handle_coordinator_update()
 
-    assert entity._optimistic_value is None
+    assert entity._optimistic.pending is False
     assert entity.native_value == 16000
 
 
@@ -668,6 +669,92 @@ def test_power_entity_never_sends_below_the_charger_floor() -> None:
             number_module.validate_charging_current(sent, coordinator.data)
             is None
         ), (requested, sent)
+
+
+# ------------------------------------------------------------------
+# Shared optimistic state
+# ------------------------------------------------------------------
+
+
+def test_shared_state_shows_the_request_until_reality_agrees() -> None:
+    """One implementation now serves all four controls."""
+    state = optimistic_module.OptimisticState()
+
+    assert state.resolve(6521) == 6521
+
+    state.request(16000)
+    assert state.resolve(6521) == 16000
+    assert state.pending is True
+
+    assert state.resolve(16000) == 16000
+    assert state.pending is False
+
+
+def test_shared_state_tolerates_a_drifting_measurement() -> None:
+    """Watts derive from a live voltage, so equality never holds.
+
+    This is what made the power entity stick: both sides recomputed
+    from a reading that moves by a volt between polls.
+    """
+    state = optimistic_module.OptimisticState(tolerance=100)
+
+    state.request(3988)
+    assert state.resolve(4000) == 4000
+    assert state.pending is False
+
+
+def test_shared_state_without_tolerance_demands_equality() -> None:
+    """A switch or a mode must match exactly."""
+    state = optimistic_module.OptimisticState()
+
+    state.request("eco")
+    assert state.resolve("fast") == "eco"
+    assert state.resolve("eco") == "eco"
+    assert state.pending is False
+
+
+def test_shared_state_holds_longer_while_a_retry_is_queued() -> None:
+    """A queued retry means the request is genuinely outstanding."""
+
+    quick = optimistic_module.OptimisticState()
+    quick.request(True, awaiting_retry=False)
+
+    patient = optimistic_module.OptimisticState()
+    patient.request(True, awaiting_retry=True)
+
+    # Neither has expired yet, but the caps differ.
+    assert quick.expired() is False
+    assert patient.expired() is False
+
+    quick._since -= optimistic_module.OPTIMISTIC_STATE_TIMEOUT + 1
+    patient._since -= optimistic_module.OPTIMISTIC_STATE_TIMEOUT + 1
+
+    assert quick.expired() is True
+    assert patient.expired() is False, "a pending retry must extend the hold"
+
+
+def test_shared_state_hold_is_capped() -> None:
+    """A superseded retry never reports back, so the hold must end.
+
+    Without a cap the entity would show a stale request until Home
+    Assistant restarts.
+    """
+    state = optimistic_module.OptimisticState()
+    state.request(True, awaiting_retry=True)
+
+    state._since -= optimistic_module.MAX_OPTIMISTIC_HOLD + 1
+
+    assert state.expired() is True
+    assert state.resolve(False) is False
+
+
+def test_shared_state_ignores_an_unknown_reading() -> None:
+    """No reading is not agreement."""
+    state = optimistic_module.OptimisticState()
+
+    state.request(16000)
+    assert state.resolve(None) == 16000
+    assert state.pending is True
 
 
 def _main() -> int:
