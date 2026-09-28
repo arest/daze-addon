@@ -465,3 +465,30 @@ def grid_cap_advice(milliamps: int, data: dict[str, Any] | None) -> str | None:
         f"Requested {requested} W, but this charger balances against a "
         f"{cap} W supply limit, so it will not draw more than that."
     )
+
+
+# Used when the charger reports no name of its own.
+DEFAULT_DEVICE_NAME = "Daze Wallbox"
+
+
+def device_name(evse_record: dict[str, Any] | None) -> str:
+    """Return the name to give the charger in Home Assistant.
+
+    The charger's own name is used unchanged. Appending a vendor
+    suffix produced "Daze HomeTT Daze" on a charger that already
+    named itself "Daze HomeTT", and every entity inherits the device
+    name, so the duplication showed up throughout the interface.
+
+    Args:
+        evse_record: The charger record from the evses response.
+
+    Returns:
+        A display name, never empty.
+
+    """
+    name = (evse_record or {}).get("evseName")
+
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+
+    return DEFAULT_DEVICE_NAME

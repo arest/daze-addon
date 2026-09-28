@@ -713,6 +713,32 @@ def test_absent_schedule_yields_nothing() -> None:
     assert catalog.get_next_scheduled_charge(data) is None
 
 
+
+def test_device_name_is_used_as_reported() -> None:
+    """No vendor suffix: the charger already names itself.
+
+    Appending one produced "Daze HomeTT Daze", and since every entity
+    inherits the device name the duplication appeared throughout the
+    interface.
+    """
+    assert payload.device_name({"evseName": "Daze HomeTT"}) == "Daze HomeTT"
+    assert payload.device_name({"evseName": "casa"}) == "casa"
+
+
+def test_device_name_falls_back_when_the_charger_reports_none() -> None:
+    """An unnamed device would otherwise show as blank."""
+    assert payload.device_name({}) == payload.DEFAULT_DEVICE_NAME
+    assert payload.device_name(None) == payload.DEFAULT_DEVICE_NAME
+    assert payload.device_name({"evseName": "   "}) == (
+        payload.DEFAULT_DEVICE_NAME
+    )
+
+
+def test_device_name_is_trimmed() -> None:
+    """Stray whitespace would show up in every entity name."""
+    assert payload.device_name({"evseName": "  Garage  "}) == "Garage"
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

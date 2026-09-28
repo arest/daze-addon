@@ -34,6 +34,7 @@ from .const import (
     MAX_POLL_INTERVAL,
     MIN_POLL_INTERVAL,
 )
+from .payload import device_name
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -307,7 +308,9 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
 
         evse = evses[0]
         original_evse_name = evse.get("evseName", "Daze Wallbox")
-        self._evse_name = f"{original_evse_name} Daze"
+        # Used as reported: the charger usually names itself after the
+        # vendor already, so adding a suffix duplicated it.
+        self._evse_name = device_name(evse)
         self._serial_number = evse.get("serialNumber", "")
         self._device_profile = evse.get("deviceProfile", "")
         self._firmware_version = evse.get("firmwareVersion", "")
