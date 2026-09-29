@@ -51,3 +51,6 @@ probe-*.txt
 
 # Working rules, kept local by operator decision 2026-09-29
 /rules.md
+# Stray copies of another project's runbook have landed here at least once.
+# Ignore the dotted form too rather than relying on nobody running `git add -A`.
+/.rules.md
