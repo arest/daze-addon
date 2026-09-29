@@ -163,6 +163,7 @@ class FakeCoordinator:
         self.limit_state = optimistic.OptimisticState()
         self.refresh_delays: list[int] = []
         self.background_retries: list[tuple[str, str]] = []
+        self.cancelled_retries: list[str] = []
 
     def async_schedule_refresh_in(self, delay: int) -> None:
         self.refresh_delays.append(delay)
@@ -176,6 +177,10 @@ class FakeCoordinator:
     ) -> None:
         """Record a hand-off instead of actually retrying anything."""
         self.background_retries.append((key, description))
+
+    def async_cancel_background_retry(self, key: str) -> None:
+        """Record a cancellation instead of actually dropping one."""
+        self.cancelled_retries.append(key)
 
 
 CHARGING_DATA: dict[str, Any] = {
@@ -795,6 +800,123 @@ def test_async_stop_during_an_in_flight_tick_does_not_rearm() -> None:
 
     # No second timer was armed by the tick that was stopped mid-flight.
     assert len(SCHEDULED) == 1
+
+
+def test_a_car_that_ignores_a_start_triggers_a_backoff() -> None:
+    """A finished car stops drawing while surplus is still high, so a
+    naive controller restarts it until sunset."""
+    data = dict(CHARGING_DATA)
+    data["evseStatus"] = "idle"
+    data["instantPowerAsWatt"] = 0
+    controller, _, _ = build(data)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    # Pretend a start was issued a while ago and the car never drew.
+    controller._started_at = 0.0
+
+    asyncio.run(controller.async_tick())
+
+    assert controller._backoff_until > 0, "no back-off was armed"
+
+
+def test_an_unknown_draw_does_not_trigger_a_backoff() -> None:
+    """A missing or unparseable instantPowerAsWatt while the charger is
+    mid-session is not evidence the car stopped drawing — it is
+    evidence the payload dropped out, which _car_draw_w already treats
+    as unknown. Backing off on that would arm an hour-long pause on a
+    car that may be drawing fine.
+
+    Called directly rather than through async_tick: a tick with an
+    unknown car draw already bails out earlier, at _read_surplus, so
+    the backoff check's own None-handling would otherwise never be
+    exercised at all.
+    """
+    data = dict(CHARGING_DATA)
+    del data["instantPowerAsWatt"]
+    controller, _, _ = build(data)
+    controller.mode = controller_module.SolarMode.SIMULATE
+    controller._started_at = 0.0
+
+    controller._check_ignored_start(controller_module.time.monotonic())
+
+    assert controller._backoff_until == 0.0
+
+
+def test_a_successful_set_cancels_its_background_retry() -> None:
+    """number.py cancels its own retry key after a successful manual
+    set (number.py:233-235). Solar's direct sends share that same key
+    and must do the same, or a retry queued from an earlier failure
+    can land after a later, successful command and overwrite it.
+    """
+    controller, coordinator, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    asyncio.run(controller.async_tick())
+
+    assert any(call[0] == "current" for call in coordinator.api_client.calls)
+    assert (
+        f"{coordinator.serial_number}:current" in coordinator.cancelled_retries
+    )
+
+
+def test_a_successful_start_cancels_both_background_retries() -> None:
+    """A START issues both a current-set and a start-charge; a
+    successful direct send of either must cancel that key's own queued
+    retry, the same as number.py and switch.py already do for their
+    own manual commands.
+    """
+    controller, coordinator, _ = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [7_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        asyncio.run(controller.async_tick())  # waiting to confirm
+        clock[0] += solar.START_DELAY_SECONDS + 1
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert any(call[0] == "start" for call in coordinator.api_client.calls)
+    assert (
+        f"{coordinator.serial_number}:current" in coordinator.cancelled_retries
+    )
+    assert (
+        f"{coordinator.serial_number}:charge" in coordinator.cancelled_retries
+    )
+
+
+def test_a_successful_stop_cancels_its_background_retry() -> None:
+    """Mirrors switch.py's own cancel after a successful manual stop
+    (switch.py:218-220): a solar-issued STOP that reaches the charger
+    must cancel any retry still queued under the same charge key.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [8_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+        hass.states.set(
+            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_tick())  # starts the below-floor timer
+
+        clock[0] += solar.STOP_DELAY_SECONDS + 1
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert any(call[0] == "stop" for call in coordinator.api_client.calls)
+    assert (
+        f"{coordinator.serial_number}:charge" in coordinator.cancelled_retries
+    )
 
 
 def _main() -> int:

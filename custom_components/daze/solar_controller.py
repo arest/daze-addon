@@ -38,6 +38,9 @@ from .payload import (
     watts_to_milliamps,
 )
 from .solar import (
+    DRAW_GRACE_SECONDS,
+    IGNORED_START_BACKOFF_SECONDS,
+    MIN_MEANINGFUL_DRAW_W,
     TICK_SECONDS,
     SolarAction,
     SolarDecision,
@@ -253,6 +256,7 @@ class SolarController:
 
         state = self._build_state(smoothed, now)
         self._track_thresholds(state, now)
+        self._check_ignored_start(now)
 
         decision = decide(self._build_state(smoothed, now))
         self._last_decision = decision
@@ -423,6 +427,44 @@ class SolarController:
             if self._below_since is None:
                 self._below_since = now
 
+    def _check_ignored_start(self, now: float) -> None:
+        """Back off if a started car never began drawing.
+
+        When a car finishes it stops drawing while surplus is still
+        high. The charger goes idle, the controller sees "not charging,
+        plenty of surplus", and starts again. Without this the cycle
+        repeats until sunset.
+
+        Draw is read through ``_car_draw_w`` rather than the raw
+        ``instantPowerAsWatt`` field, and its None is treated as "wait
+        and see", not "not drawing": a missing or unparseable reading
+        while the charger is mid-session says nothing about the car,
+        and backing off on that would arm an hour-long pause on a
+        car that may already be drawing fine.
+        """
+        if self._started_at is None:
+            return
+
+        if now - self._started_at < DRAW_GRACE_SECONDS:
+            return
+
+        data = self._coordinator.data or {}
+        draw = self._car_draw_w(data)
+        if draw is None:
+            return
+
+        if draw >= MIN_MEANINGFUL_DRAW_W:
+            return
+
+        self._backoff_until = now + IGNORED_START_BACKOFF_SECONDS
+        self._started_at = None
+        _LOGGER.info(
+            "The car did not draw within %ds of starting; backing off for "
+            "%d minutes",
+            DRAW_GRACE_SECONDS,
+            IGNORED_START_BACKOFF_SECONDS // 60,
+        )
+
     async def _send_command(
         self, description: str, call: Callable[[], Any], retry_key: str
     ) -> bool | None:
@@ -506,9 +548,13 @@ class SolarController:
         start/stop switch. That gives supersession for free in both
         directions through the coordinator's own machinery — a newer
         retry cancels an older one under the same key on the way in,
-        and each entity already cancels its own key on a successful
-        direct send — rather than a manual override leaving a queued
-        solar command to land minutes later and undo it.
+        and every command-issuing module, this one included, cancels
+        its own key on a successful direct send — rather than a stale
+        queued retry landing minutes later and undoing whichever side
+        acted more recently. A send only queued for the background
+        retry (None, not True) is not cancelled: it has not reached the
+        charger yet, so the retry it would cancel is the only thing
+        still trying to get the change applied.
         """
         client = self._coordinator.api_client
         serial = self._coordinator.serial_number
@@ -522,14 +568,14 @@ class SolarController:
 
         if decision.action is SolarAction.STOP:
             self._command_times.append(now)
-            if (
-                await self._send_command(
-                    "stopping the charge",
-                    lambda: client.async_stop_charge(serial),
-                    charge_key,
-                )
-                is not False
-            ):
+            stop_sent = await self._send_command(
+                "stopping the charge",
+                lambda: client.async_stop_charge(serial),
+                charge_key,
+            )
+            if stop_sent is True:
+                self._coordinator.async_cancel_background_retry(charge_key)
+            if stop_sent is not False:
                 self._started_at = None
 
         elif decision.action is SolarAction.START:
@@ -544,6 +590,10 @@ class SolarController:
                     ),
                     current_key,
                 )
+                if sent is True:
+                    self._coordinator.async_cancel_background_retry(
+                        current_key
+                    )
 
             # A limit only queued for the background retry has not
             # reached the charger yet. Starting anyway would run the
@@ -552,14 +602,16 @@ class SolarController:
             # prevent — so "queued" is not treated as "sent" here.
             if sent is True:
                 self._command_times.append(now)
-                if (
-                    await self._send_command(
-                        "starting the charge",
-                        lambda: client.async_start_charge(serial),
-                        charge_key,
+                start_sent = await self._send_command(
+                    "starting the charge",
+                    lambda: client.async_start_charge(serial),
+                    charge_key,
+                )
+                if start_sent is True:
+                    self._coordinator.async_cancel_background_retry(
+                        charge_key
                     )
-                    is not False
-                ):
+                if start_sent is not False:
                     self._started_at = now
 
         elif decision.action is SolarAction.SET:
@@ -568,13 +620,15 @@ class SolarController:
 
             self._command_times.append(now)
             milliamps = watts_to_milliamps(decision.target_watts, data)
-            await self._send_command(
+            set_sent = await self._send_command(
                 f"setting the charging current to {milliamps} mA",
                 lambda: client.async_set_max_charging_current(
                     serial, milliamps
                 ),
                 current_key,
             )
+            if set_sent is True:
+                self._coordinator.async_cancel_background_retry(current_key)
 
         self._coordinator.async_schedule_refresh_in(10)
 
