@@ -162,7 +162,13 @@ def install_homeassistant_stubs() -> list[tuple[Any, Any, Any]]:
         "homeassistant.helpers.aiohttp_client",
         async_get_clientsession=lambda hass: None,
     )
-    _module("homeassistant.helpers.event", async_call_later=async_call_later)
+    _module(
+        "homeassistant.helpers.event",
+        async_call_later=async_call_later,
+        async_track_state_change_event=lambda hass, entities, cb: (
+            lambda: None
+        ),
+    )
     _module(
         "homeassistant.helpers.device_registry",
         DeviceInfo=dict,

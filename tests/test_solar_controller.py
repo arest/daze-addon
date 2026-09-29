@@ -93,7 +93,13 @@ def _install_stubs() -> None:
     _module("homeassistant")
     _module("homeassistant.core", HomeAssistant=StubHass, callback=lambda fn: fn)
     _module("homeassistant.helpers")
-    _module("homeassistant.helpers.event", async_call_later=async_call_later)
+    _module(
+        "homeassistant.helpers.event",
+        async_call_later=async_call_later,
+        async_track_state_change_event=lambda hass, entities, cb: (
+            lambda: None
+        ),
+    )
 
 
 _install_stubs()
@@ -1298,6 +1304,221 @@ def test_an_unplug_inside_the_grace_does_not_survive_to_punish_a_reconnect() -> 
     )
 
     assert controller._backoff_until == 0.0
+
+
+def test_a_collapse_starts_the_stop_clock_when_it_happens() -> None:
+    """The ten-minute stop delay must run from the collapse, not from
+    the moment the five-minute average catches up with it.
+
+    Asserting the mark itself rather than "a stop was sent": no stop
+    can be sent at the moment of a collapse — the smoothed figure is
+    still healthy, which is the whole reason this path exists — so a
+    test that looked for a command would pass against an
+    implementation that did nothing at all.
+    """
+    controller, _, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [20_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+
+        # A healthy history: 3000 W drawn plus 5000 W exported.
+        for _ in range(2):
+            asyncio.run(controller.async_tick())
+            clock[0] += solar.TICK_SECONDS
+
+        clock[0] += 1
+        collapse_at = clock[0]
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+
+        asyncio.run(controller.async_sensor_changed())
+
+        assert controller._below_since == collapse_at, (
+            "the stop clock did not start at the collapse: "
+            f"{controller._below_since} instead of {collapse_at}"
+        )
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+
+def test_a_collapse_is_evaluated_once_not_on_every_sensor_update() -> None:
+    """A grid sensor reporting every ten seconds updates six times a
+    minute, and the raw reading stays below the floor for as long as
+    the average takes to catch up. Without a latch each of those
+    updates runs a full evaluation, and each can rewrite the limit:
+    the twenty-command hourly backstop is spent in minutes, and it is
+    then not there for the stop when the stop finally comes.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [21_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+        asyncio.run(controller.async_tick())
+
+        clock[0] += solar.TICK_SECONDS + 1
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_sensor_changed())
+
+        after_first = len(coordinator.api_client.calls)
+
+        # The sensor keeps reporting the same collapsed figures.
+        for _ in range(6):
+            clock[0] += 10
+            asyncio.run(controller.async_sensor_changed())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert len(coordinator.api_client.calls) == after_first, (
+        "the fast path fired again while the same collapse was still "
+        "being counted"
+    )
+
+
+def test_a_recovery_re_arms_the_fast_path() -> None:
+    """A kettle is not a collapse.
+
+    When the raw reading comes back above the floor the stop clock must
+    let go of it. Otherwise a dozen three-kilowatt kitchen dips over an
+    afternoon add up to ten minutes "below the floor" and stop a charge
+    that never wanted for surplus.
+    """
+    controller, _, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [22_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+        asyncio.run(controller.async_tick())
+
+        clock[0] += solar.TICK_SECONDS + 1
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_sensor_changed())
+        assert controller._below_since is not None
+
+        # The kettle switches off.
+        clock[0] += 30
+        hass.states.set(
+            "sensor.grid_import", "0", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "5000", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_sensor_changed())
+        assert controller._collapsed_since is None
+
+        clock[0] += solar.TICK_SECONDS
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert controller._below_since is None, (
+        "the stop clock is still anchored to a collapse that recovered"
+    )
+
+
+def test_a_rise_does_not_trigger_an_immediate_evaluation() -> None:
+    """Otherwise every sensor update rewrites the charger's limit."""
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    for _ in range(3):
+        asyncio.run(controller.async_tick())
+
+    before = len(coordinator.api_client.calls)
+    hass.states.set("sensor.grid_export", "9000")
+
+    asyncio.run(controller.async_sensor_changed())
+
+    assert len(coordinator.api_client.calls) == before
+
+
+def test_a_sensor_event_during_a_tick_does_not_start_a_second_one() -> None:
+    """async_tick has two callers now, and an API call is an await.
+
+    A sensor event arriving while a tick waits on the charger would
+    otherwise run a second evaluation against the same coordinator
+    data: both append to _command_times, both reach the same branch,
+    and both send the same command. The clock is advanced past the
+    minimum spacing inside the call on purpose, so that only the
+    re-entrancy guard can be what stops it.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [23_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    reentered: list[int] = []
+
+    async def _set_current_then_collapse(
+        serial: str, current_ma: int, attempts: int = 8
+    ) -> dict:
+        coordinator.api_client.calls.append(("current", current_ma))
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        clock[0] += solar.TICK_SECONDS + 1
+        await controller.async_sensor_changed()
+        reentered.append(1)
+        return {}
+
+    coordinator.api_client.async_set_max_charging_current = (
+        _set_current_then_collapse
+    )
+
+    try:
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert reentered == [1], "the sensor event never arrived mid-tick"
+    assert len(coordinator.api_client.calls) == 1, (
+        "a second evaluation ran inside the first and commanded again"
+    )
+
+
+def test_async_start_still_clears_the_stopped_flag() -> None:
+    """async_start is rewritten in this task, and the flag it sets is
+    easy to drop on the way past: no other test builds a controller,
+    stops it and starts it again, so nothing else would notice.
+    """
+    controller, _, _ = build()
+    SCHEDULED.clear()
+
+    asyncio.run(controller.async_stop())
+    assert controller._stopped is True
+
+    asyncio.run(controller.async_start())
+
+    assert controller._stopped is False
+    assert len(SCHEDULED) == 1
 
 
 def _main() -> int:

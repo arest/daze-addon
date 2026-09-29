@@ -21,7 +21,10 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_state_change_event,
+)
 
 from .api import (
     COMMAND_ERROR_CODE_RPC_FAILURE,
@@ -134,10 +137,16 @@ class SolarController:
         self._last_decision: SolarDecision | None = None
         self._listeners: list[Callable[[], None]] = []
         self._cancel_tick: Callable[[], None] | None = None
+        self._cancel_listener: Callable[[], None] | None = None
         self._stopped = False
 
         self._above_since: float | None = None
         self._below_since: float | None = None
+        # When the raw reading fell below the floor and has stayed
+        # there. Anchors the stop clock and latches the fast path.
+        self._collapsed_since: float | None = None
+        self._last_evaluation: float | None = None
+        self._evaluating = False
         # The minimum-run clock: how long ago the current charge
         # began, consumed by decide() via seconds_since_start. Not
         # necessarily a start this controller issued — Task 10 seeds
@@ -204,6 +213,7 @@ class SolarController:
         self._mode = SolarMode.OFF
         self._above_since = None
         self._below_since = None
+        self._collapsed_since = None
         self._started_at = None
         self._start_issued_at = None
         self._backoff_until = 0.0
@@ -251,9 +261,27 @@ class SolarController:
         return _remove
 
     async def async_start(self) -> None:
-        """Begin ticking."""
+        """Begin ticking, and watch the grid sensors for a collapse."""
+        # Keep this. async_stop sets the flag to prevent a tick already
+        # in flight from re-arming itself, and a controller started
+        # again after a stop would otherwise never tick at all.
         self._stopped = False
         self._schedule_tick()
+
+        entities = [
+            entity
+            for entity in (self._import_entity, self._export_entity)
+            if entity
+        ]
+
+        if entities:
+
+            async def _changed(_event: Any) -> None:
+                await self.async_sensor_changed()
+
+            self._cancel_listener = async_track_state_change_event(
+                self._hass, entities, _changed
+            )
 
     async def async_stop(self) -> None:
         """Stop ticking and drop listeners.
@@ -267,6 +295,9 @@ class SolarController:
         if self._cancel_tick is not None:
             self._cancel_tick()
             self._cancel_tick = None
+        if self._cancel_listener is not None:
+            self._cancel_listener()
+            self._cancel_listener = None
         self._listeners.clear()
 
     # ------------------------------------------------------------------
@@ -274,19 +305,52 @@ class SolarController:
     # ------------------------------------------------------------------
 
     async def async_tick(self) -> None:
+        """Evaluate once, unless an evaluation is already running.
+
+        Skipping rather than queueing: a queued evaluation would run
+        against coordinator data that is by then one command out of
+        date, and would decide the same thing twice — two entries in
+        _command_times, two commands on the wire.
+
+        A plain flag rather than an asyncio.Lock. The lock would be
+        correct in production and wrong in the test suite, which drives
+        the controller through asyncio.run() one call at a time: a Lock
+        binds itself to the first event loop that acquires it and
+        raises RuntimeError on the next one. The event loop is
+        single-threaded, so nothing can interleave between the check
+        and the assignment below, and a flag is enough.
+        """
+        if self._evaluating:
+            _LOGGER.debug("An evaluation is already running; skipping")
+            return
+
+        self._evaluating = True
+        try:
+            await self._async_evaluate()
+        finally:
+            self._evaluating = False
+
+    async def _async_evaluate(self) -> None:
         """Evaluate once and act if the mode allows it."""
         if self._mode is SolarMode.OFF:
             return
 
         now = time.monotonic()
+        self._last_evaluation = now
         surplus = self._read_surplus()
 
         if surplus is None:
             # Absence of information is never grounds for acting, and
             # must not silently continue a confirmation or stop delay
             # that was timed against a period nobody actually observed.
+            # _collapsed_since anchors that same stop delay to a raw
+            # reading, so it goes with the other two clocks: left set,
+            # a blind period would let the stop clock resume counting
+            # from a collapse observed before the sensors went dark,
+            # against time nobody actually watched.
             self._above_since = None
             self._below_since = None
+            self._collapsed_since = None
 
             if not self._sensor_warning_logged:
                 self._sensor_warning_logged = True
@@ -303,10 +367,11 @@ class SolarController:
         if smoothed is None:
             self._above_since = None
             self._below_since = None
+            self._collapsed_since = None
             return
 
         state = self._build_state(smoothed, now)
-        self._track_thresholds(state, now)
+        self._track_thresholds(state, now, surplus)
 
         # A start only simulated never reached the charger, so the
         # car was never given the chance to draw. Checking anyway
@@ -334,6 +399,71 @@ class SolarController:
 
         await self._carry_out(decision, now)
         self._notify()
+
+    async def async_sensor_changed(self) -> None:
+        """Note a collapse as soon as it happens.
+
+        What this brings forward is the start of the stop clock, not
+        the stop. The stop needs ten minutes below the floor and is
+        decided from the smoothed figure, which is minutes behind the
+        drop; starting its clock from the drop itself is worth about
+        four minutes of avoided import, and is the whole benefit. An
+        evaluation is run as well when it is cheap to do so, because
+        the collapse may also be the moment a limit becomes too high.
+
+        Rising surplus is not urgent, and is left to the tick: acting
+        on every increase would rewrite the limit constantly against a
+        charger that takes seconds to apply a change.
+        """
+        if self._mode is SolarMode.OFF:
+            return
+
+        surplus = self._read_surplus()
+        if surplus is None:
+            return
+
+        now = time.monotonic()
+        data = self._coordinator.data or {}
+        floor = milliamps_to_watts(min_charging_current(data), data)
+
+        if surplus - self._reserve_w >= floor:
+            # Healthy again. Let go of the anchor and re-arm, so the
+            # next collapse is counted from itself.
+            self._collapsed_since = None
+            return
+
+        if self._collapsed_since is not None:
+            # This collapse is already being counted. Without this the
+            # condition below the floor holds on every sensor update
+            # until the average catches up, and a sensor reporting
+            # every ten seconds would run six evaluations a minute and
+            # spend the hourly command backstop in about three.
+            return
+
+        self._collapsed_since = now
+
+        smoothed = self._smoother.value()
+        if smoothed is not None and smoothed - self._reserve_w < floor:
+            # The average is already below the floor, so the ordinary
+            # tick is already treating this as a deficit and the clock
+            # is already running. Nothing to bring forward.
+            return
+
+        if (
+            self._last_evaluation is not None
+            and now - self._last_evaluation < TICK_SECONDS
+        ):
+            _LOGGER.debug(
+                "Surplus collapsed to %.0f W; the stop clock starts now, "
+                "the evaluation waits for the tick",
+                surplus,
+            )
+            return
+
+        _LOGGER.debug(
+            "Surplus collapsed to %.0f W; evaluating without waiting", surplus
+        )
+        await self.async_tick()
 
     # ------------------------------------------------------------------
     # Internals
@@ -471,18 +601,39 @@ class SolarController:
         ]
         return len(self._command_times)
 
-    def _track_thresholds(self, state: SolarState, now: float) -> None:
-        """Maintain how long surplus has been above or below the floor."""
+    def _track_thresholds(
+        self, state: SolarState, now: float, raw_surplus: float
+    ) -> None:
+        """Maintain how long surplus has been above or below the floor.
+
+        Two figures, deliberately. What to do is decided from the
+        smoothed surplus, because raw grid readings move with every
+        kettle. When the below-floor period *started* is taken from the
+        raw reading, because the five-minute average is minutes behind
+        a real collapse, and the stop delay is counted from this mark:
+        anchoring it to the average adds those minutes to the ten, and
+        the car imports at up to the charger's ceiling throughout.
+
+        _collapsed_since holds that anchor and doubles as the fast
+        path's latch. It is cleared the moment the raw reading comes
+        back above the floor, so a kettle that dips the supply for a
+        minute leaves nothing behind.
+        """
         available = state.surplus_w - state.reserve_w
 
-        if available >= state.floor_w:
+        if raw_surplus - state.reserve_w >= state.floor_w:
+            self._collapsed_since = None
+        elif self._collapsed_since is None:
+            self._collapsed_since = now
+
+        if available >= state.floor_w and self._collapsed_since is None:
             self._below_since = None
             if self._above_since is None:
                 self._above_since = now
         else:
             self._above_since = None
             if self._below_since is None:
-                self._below_since = now
+                self._below_since = self._collapsed_since or now
 
     def _check_ignored_start(self, now: float, car_connected: bool) -> None:
         """Back off if a car we started never began drawing.

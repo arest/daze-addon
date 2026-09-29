@@ -95,6 +95,9 @@ def _install_homeassistant_stubs() -> None:
     _module(
         "homeassistant.helpers.event",
         async_call_later=lambda hass, delay, action: (lambda: None),
+        async_track_state_change_event=lambda hass, entities, cb: (
+            lambda: None
+        ),
     )
     _module(
         "homeassistant.helpers.update_coordinator",
