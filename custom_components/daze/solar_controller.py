@@ -68,7 +68,11 @@ class SolarController:
         import_entity: str | None,
         export_entity: str | None,
     ) -> None:
-        """Initialise in simulate mode, the safe default on first enable.
+        """Initialise in the off state.
+
+        Ships off: nothing reads a sensor or notifies a listener until
+        the user has opted in, since the select entity that gates that
+        opt-in defaults to simulate the first time it does.
 
         Args:
             hass: Used to read the grid sensors and schedule ticks.
@@ -82,7 +86,7 @@ class SolarController:
         self._import_entity = import_entity
         self._export_entity = export_entity
 
-        self._mode = SolarMode.SIMULATE
+        self._mode = SolarMode.OFF
         self._reserve_w = 0.0
         self._smoother = SurplusSmoother()
         self._last_decision: SolarDecision | None = None

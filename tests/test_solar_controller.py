@@ -171,8 +171,24 @@ def build(data: dict[str, Any] | None = None) -> tuple[Any, Any, Any]:
 def test_surplus_uses_both_sensors_and_the_car_draw() -> None:
     """3000 W drawn plus 5000 W exported is 8000 W available."""
     controller, _, _ = build()
+    controller.mode = controller_module.SolarMode.SIMULATE
     asyncio.run(controller.async_tick())
     assert controller.surplus_w == 8000
+
+
+def test_off_is_the_default_and_does_nothing_observable() -> None:
+    """Ships off: no sensor read and no notification until opted in."""
+    controller, coordinator, _ = build()
+    seen: list[int] = []
+    controller.add_listener(lambda: seen.append(1))
+
+    assert controller.mode is controller_module.SolarMode.OFF
+
+    asyncio.run(controller.async_tick())
+
+    assert controller.surplus_w is None
+    assert seen == []
+    assert coordinator.api_client.calls == []
 
 
 def test_simulate_decides_but_sends_nothing() -> None:
@@ -266,6 +282,7 @@ def test_the_reserve_lowers_the_target() -> None:
 def test_listeners_are_told_after_a_tick() -> None:
     """The entities redraw from this rather than polling the object."""
     controller, _, _ = build()
+    controller.mode = controller_module.SolarMode.SIMULATE
     seen: list[int] = []
     controller.add_listener(lambda: seen.append(1))
 
