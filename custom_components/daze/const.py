@@ -45,6 +45,18 @@ DEFAULT_POLL_INTERVAL = 30  # seconds
 MIN_POLL_INTERVAL = 10  # seconds
 MAX_POLL_INTERVAL = 600  # seconds
 
+# Solar surplus control. The two grid sensors are chosen by the user in
+# the options flow; both are required before solar control can leave
+# "off".
+CONF_GRID_IMPORT_SENSOR = "grid_import_sensor"
+CONF_GRID_EXPORT_SENSOR = "grid_export_sensor"
+
+# Watts to leave for the house before the car gets any. Site-specific,
+# so it is an entity rather than a constant; this is only its default.
+CONF_SOLAR_RESERVE = "solar_reserve"
+DEFAULT_SOLAR_RESERVE = 0
+MAX_SOLAR_RESERVE = 5000
+
 # How long an optimistic switch state is trusted before the charger's
 # own reading takes over again. Observed transitions completed in 9 to
 # 12 seconds, so this both covers them and bounds how long the UI can

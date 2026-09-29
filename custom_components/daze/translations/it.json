@@ -156,9 +156,11 @@
     "step": {
       "init": {
         "title": "Opzioni Daze Wallbox",
-        "description": "Ogni quanto interrogare l'API cloud di Daze. Valori bassi rendono le entità più reattive ma inviano più richieste.",
+        "description": "Ogni quanto interrogare l'API cloud di Daze e quali sensori riportano prelievo e immissione in rete. I sensori di rete servono solo per il controllo solare; lasciali vuoti altrimenti.",
         "data": {
-          "poll_interval": "Intervallo di aggiornamento (secondi)"
+          "poll_interval": "Intervallo di aggiornamento (secondi)",
+          "grid_import_sensor": "Sensore di potenza prelevata dalla rete",
+          "grid_export_sensor": "Sensore di potenza immessa in rete"
         }
       }
     }

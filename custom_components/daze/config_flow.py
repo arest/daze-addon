@@ -13,6 +13,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DazeApiClient
@@ -23,6 +24,8 @@ from .const import (
     CONF_EMAIL,
     CONF_EVSE_NAME,
     CONF_FIRMWARE_VERSION,
+    CONF_GRID_EXPORT_SENSOR,
+    CONF_GRID_IMPORT_SENSOR,
     CONF_NETWORK_NAME,
     CONF_NETWORK_UID,
     CONF_POLL_INTERVAL,
@@ -381,6 +384,7 @@ class DazeOptionsFlowHandler(OptionsFlow):
             ),
         )
 
+        options = self._config_entry.options
         schema = vol.Schema(
             {
                 vol.Required(
@@ -388,7 +392,29 @@ class DazeOptionsFlowHandler(OptionsFlow):
                 ): vol.All(
                     vol.Coerce(int),
                     vol.Range(min=MIN_POLL_INTERVAL, max=MAX_POLL_INTERVAL),
-                )
+                ),
+                # Optional so the integration works without solar. Solar
+                # control refuses to leave "off" until both are set.
+                vol.Optional(
+                    CONF_GRID_IMPORT_SENSOR,
+                    description={
+                        "suggested_value": options.get(CONF_GRID_IMPORT_SENSOR)
+                    },
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor", device_class="power"
+                    )
+                ),
+                vol.Optional(
+                    CONF_GRID_EXPORT_SENSOR,
+                    description={
+                        "suggested_value": options.get(CONF_GRID_EXPORT_SENSOR)
+                    },
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor", device_class="power"
+                    )
+                ),
             }
         )
 
