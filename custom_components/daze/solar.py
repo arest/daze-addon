@@ -219,3 +219,72 @@ def decide(state: SolarState) -> SolarDecision:
         target_watts=target,
         reason=f"surplus {available:.0f} W sustained, starting at {target} W",
     )
+
+
+def compute_surplus(
+    car_draw_w: float, export_w: float, import_w: float
+) -> float:
+    """Return the power available to the car, in watts.
+
+    The car's own draw is added back because it is not surplus that has
+    disappeared: it is surplus already being used. Omitting that term
+    makes the controller read its own consumption as a deficit and wind
+    itself down to zero.
+
+    Args:
+        car_draw_w: What the charger is currently delivering.
+        export_w: Grid export, positive.
+        import_w: Grid import, positive.
+
+    Returns:
+        Available watts, never negative.
+
+    """
+    return max(0.0, car_draw_w + export_w - import_w)
+
+
+class SurplusSmoother:
+    """A moving average over a fixed time window.
+
+    Raw grid readings move with every kettle and oven cycle. Acting on
+    them would rewrite the charger's limit constantly, against a device
+    that takes seconds to apply a change.
+    """
+
+    def __init__(self, window_seconds: float = SMOOTHING_SECONDS) -> None:
+        """Initialise an empty window.
+
+        Args:
+            window_seconds: How much history to average over.
+
+        """
+        self.window_seconds = window_seconds
+        self._samples: list[tuple[float, float]] = []
+
+    def add(self, value: float, now: float) -> None:
+        """Record a reading and drop anything that has aged out.
+
+        Args:
+            value: The reading, in watts.
+            now: A monotonic timestamp in seconds.
+
+        """
+        # A clock that goes backwards, from a restart or a correction,
+        # would otherwise leave future-dated samples wedged in the
+        # window forever.
+        if self._samples and now < self._samples[-1][0]:
+            self._samples.clear()
+
+        self._samples.append((now, value))
+
+        cutoff = now - self.window_seconds
+        self._samples = [
+            sample for sample in self._samples if sample[0] >= cutoff
+        ]
+
+    def value(self) -> float | None:
+        """Return the average of the window, or None if it is empty."""
+        if not self._samples:
+            return None
+
+        return sum(value for _, value in self._samples) / len(self._samples)

@@ -269,6 +269,62 @@ def test_every_decision_carries_a_reason() -> None:
         assert decision.reason.strip() == decision.reason
 
 
+# ------------------------------------------------------------------
+# Surplus arithmetic
+# ------------------------------------------------------------------
+
+
+def test_surplus_adds_back_the_cars_own_draw() -> None:
+    """The car's consumption is not surplus that disappeared; it is
+    surplus already in use. Without this term the controller reads its
+    own draw as a deficit and winds itself down to zero."""
+    assert solar.compute_surplus(car_draw_w=3000, export_w=0, import_w=0) == 3000
+
+
+def test_surplus_counts_export() -> None:
+    assert solar.compute_surplus(car_draw_w=0, export_w=4000, import_w=0) == 4000
+
+
+def test_surplus_subtracts_import() -> None:
+    """Importing while charging means the car is over-drawing."""
+    assert (
+        solar.compute_surplus(car_draw_w=3000, export_w=0, import_w=1000) == 2000
+    )
+
+
+def test_surplus_never_goes_negative() -> None:
+    """A negative surplus is not meaningful to the caller; zero is."""
+    assert solar.compute_surplus(car_draw_w=0, export_w=0, import_w=5000) == 0
+
+
+def test_smoother_reports_nothing_until_it_has_data() -> None:
+    smoother = solar.SurplusSmoother()
+    assert smoother.value() is None
+
+
+def test_smoother_averages_its_window() -> None:
+    smoother = solar.SurplusSmoother()
+    for index, reading in enumerate((1000, 2000, 3000)):
+        smoother.add(reading, now=float(index))
+    assert smoother.value() == 2000
+
+
+def test_smoother_discards_readings_outside_the_window() -> None:
+    """Otherwise this morning's surplus still influences this evening."""
+    smoother = solar.SurplusSmoother()
+    smoother.add(9999, now=0.0)
+    smoother.add(1000, now=solar.SMOOTHING_SECONDS + 1)
+    assert smoother.value() == 1000
+
+
+def test_smoother_survives_a_clock_that_goes_backwards() -> None:
+    """A restart or a clock correction must not wedge it."""
+    smoother = solar.SurplusSmoother()
+    smoother.add(1000, now=100.0)
+    smoother.add(2000, now=50.0)
+    assert smoother.value() is not None
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [
