@@ -812,7 +812,7 @@ def test_a_car_that_ignores_a_start_triggers_a_backoff() -> None:
     controller.mode = controller_module.SolarMode.ACTIVE
 
     # Pretend a start was issued a while ago and the car never drew.
-    controller._started_at = 0.0
+    controller._start_issued_at = 0.0
 
     asyncio.run(controller.async_tick())
 
@@ -835,11 +835,169 @@ def test_an_unknown_draw_does_not_trigger_a_backoff() -> None:
     del data["instantPowerAsWatt"]
     controller, _, _ = build(data)
     controller.mode = controller_module.SolarMode.SIMULATE
-    controller._started_at = 0.0
+    controller._start_issued_at = 0.0
 
     controller._check_ignored_start(controller_module.time.monotonic())
 
     assert controller._backoff_until == 0.0
+
+
+def test_the_draw_grace_period_is_honoured() -> None:
+    """A car passes through the wait-for-EV state on very nearly every
+    successful start — evseState 5, "session live and authorised, the
+    car has not begun drawing yet" (payload.py:33-37). Arming an
+    hour-long back-off before the grace period has actually elapsed
+    would fire on that state on its own.
+    """
+    data = dict(CHARGING_DATA)
+    data["evseStatus"] = "idle"
+    data["instantPowerAsWatt"] = 0
+    controller, _, _ = build(data)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [12_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._start_issued_at = clock[0]
+        clock[0] += solar.DRAW_GRACE_SECONDS - 1
+        controller._check_ignored_start(clock[0])
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert controller._backoff_until == 0.0
+
+
+def test_a_sustained_idle_start_does_not_wait_for_the_rate_limit() -> None:
+    """decide() has no memory of already having started: while the
+    charger stays idle with surplus sustained it returns START on
+    every tick. Resetting the draw-grace clock on each of those would
+    mean it never elapses, so the back-off would never arm — leaving
+    the hourly rate limit, a backstop against bugs and not a
+    substitute for this, to blunt the loop instead, twenty commands
+    and half an hour late instead of a handful of commands and five
+    minutes.
+    """
+    controller, coordinator, _ = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [13_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        asyncio.run(controller.async_tick())  # waiting to confirm
+        clock[0] += solar.START_DELAY_SECONDS + 1
+        asyncio.run(controller.async_tick())  # first start
+
+        for _ in range(4):
+            clock[0] += solar.TICK_SECONDS
+            asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert controller._backoff_until > 0
+    assert len(coordinator.api_client.calls) < solar.MAX_COMMANDS_PER_HOUR
+
+
+def test_a_queued_start_does_not_arm_the_draw_grace_clock() -> None:
+    """The current-set half of START already required a direct `True`
+    send before cancelling its retry; the start-charge half must hold
+    itself to the same standard for arming the draw-grace clock. A
+    queued start (None) has not reached the charger, so there is
+    nothing yet for the car to have ignored — and the chain backing it
+    up runs out to +465s, well past the 300s grace, so treating it as
+    issued would let the back-off arm while the queued start is still
+    trying to land.
+    """
+    controller, coordinator, _ = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [14_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        asyncio.run(controller.async_tick())  # waiting to confirm
+        clock[0] += solar.START_DELAY_SECONDS + 1
+
+        async def _rpc_failure(serial: str, attempts: int = 8) -> dict:
+            raise api_module.ApiCommandRejectedError(
+                "unreachable", code=api_module.COMMAND_ERROR_CODE_RPC_FAILURE
+            )
+
+        coordinator.api_client.async_start_charge = _rpc_failure
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert coordinator.background_retries != []
+    assert controller._start_issued_at is None
+
+
+def test_a_charge_not_issued_by_us_does_not_arm_the_backoff() -> None:
+    """_started_at, the minimum-run clock, can be seeded from a charge
+    already running when the controller starts (Task 9 does this at
+    boot, so a healthy charge is not stopped moments after restart).
+    That charge was never issued by us, so a car sitting at 0 W must
+    not be judged against a start that never happened — only
+    _start_issued_at, set solely by a start _carry_out itself sent,
+    may arm the draw-grace back-off.
+    """
+    data = dict(CHARGING_DATA)
+    data["instantPowerAsWatt"] = 0
+    controller, _, _ = build(data)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    # Simulate Task 9's boot-time seeding of the minimum-run clock
+    # from an already-running charge, with no start of ours behind it.
+    controller._started_at = 0.0
+    assert controller._start_issued_at is None
+
+    asyncio.run(controller.async_tick())
+
+    assert controller._backoff_until == 0.0
+
+
+def test_simulate_mode_does_not_check_for_an_ignored_start() -> None:
+    """A dry run must not arm a real hour-long back-off from a start
+    that was itself only simulated — the car was never actually told
+    to charge, so treating it as ignored is not a faithful preview.
+    """
+    data = dict(CHARGING_DATA)
+    data["evseStatus"] = "idle"
+    data["instantPowerAsWatt"] = 0
+    controller, _, _ = build(data)
+    controller.mode = controller_module.SolarMode.SIMULATE
+    controller._start_issued_at = 0.0
+
+    asyncio.run(controller.async_tick())
+
+    assert controller._backoff_until == 0.0
+
+
+def test_a_queued_set_does_not_cancel_its_own_retry() -> None:
+    """A SET that fails and gets queued for the background retry must
+    not immediately cancel that same retry — _send_command's None
+    means only queued, not sent, so cancelling it here would discard
+    the one thing still trying to apply the change.
+    """
+    controller, coordinator, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    async def _rpc_failure(
+        serial: str, current_ma: int, attempts: int = 8
+    ) -> dict:
+        raise api_module.ApiCommandRejectedError(
+            "unreachable", code=api_module.COMMAND_ERROR_CODE_RPC_FAILURE
+        )
+
+    coordinator.api_client.async_set_max_charging_current = _rpc_failure
+
+    asyncio.run(controller.async_tick())
+
+    key = f"{coordinator.serial_number}:current"
+    assert coordinator.background_retries != []
+    assert any(k == key for k, _ in coordinator.background_retries)
+    assert key not in coordinator.cancelled_retries
 
 
 def test_a_successful_set_cancels_its_background_retry() -> None:

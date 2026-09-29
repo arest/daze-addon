@@ -132,7 +132,21 @@ class SolarController:
 
         self._above_since: float | None = None
         self._below_since: float | None = None
+        # The minimum-run clock: how long ago the current charge
+        # began, consumed by decide() via seconds_since_start. Not
+        # necessarily a start this controller issued — Task 9 seeds
+        # this from a charge already running when the controller
+        # starts, so a healthy charge is not stopped moments after
+        # boot. Because of that, this must stay agnostic to who or
+        # what started the charge; _check_ignored_start reads
+        # _start_issued_at instead, never this one.
         self._started_at: float | None = None
+        # "We issued a start and are waiting to see whether the car
+        # draws." Set only in _carry_out, only when a start genuinely
+        # reached the charger, so a charge this controller did not
+        # itself start (seeded at boot, or started manually) is never
+        # judged against a start that never happened.
+        self._start_issued_at: float | None = None
         self._backoff_until: float = 0.0
         self._command_times: list[float] = []
         self._sensor_warning_logged = False
@@ -256,7 +270,13 @@ class SolarController:
 
         state = self._build_state(smoothed, now)
         self._track_thresholds(state, now)
-        self._check_ignored_start(now)
+
+        # A start only simulated never reached the charger, so the
+        # car was never given the chance to draw. Checking anyway
+        # would let a dry run arm a real hour-long back-off from a
+        # start that never happened.
+        if self._mode is SolarMode.ACTIVE:
+            self._check_ignored_start(now)
 
         decision = decide(self._build_state(smoothed, now))
         self._last_decision = decision
@@ -428,12 +448,23 @@ class SolarController:
                 self._below_since = now
 
     def _check_ignored_start(self, now: float) -> None:
-        """Back off if a started car never began drawing.
+        """Back off if a car we started never began drawing.
 
         When a car finishes it stops drawing while surplus is still
         high. The charger goes idle, the controller sees "not charging,
         plenty of surplus", and starts again. Without this the cycle
         repeats until sunset.
+
+        Reads ``_start_issued_at``, never ``_started_at``: the latter
+        is the minimum-run clock ``decide()`` consumes, and can be
+        seeded from a charge the controller did not itself start (a
+        charge already running when Home Assistant restarts — see
+        Task 9). Judging that against a start that never happened
+        would arm an hour-long back-off on a perfectly healthy charge
+        the moment it passes through the wait-for-EV state every
+        start goes through. Only a start this method's own caller
+        actually issued, and that reached the charger, sets
+        ``_start_issued_at`` in the first place.
 
         Draw is read through ``_car_draw_w`` rather than the raw
         ``instantPowerAsWatt`` field, and its None is treated as "wait
@@ -442,10 +473,10 @@ class SolarController:
         and backing off on that would arm an hour-long pause on a
         car that may already be drawing fine.
         """
-        if self._started_at is None:
+        if self._start_issued_at is None:
             return
 
-        if now - self._started_at < DRAW_GRACE_SECONDS:
+        if now - self._start_issued_at < DRAW_GRACE_SECONDS:
             return
 
         data = self._coordinator.data or {}
@@ -454,10 +485,12 @@ class SolarController:
             return
 
         if draw >= MIN_MEANINGFUL_DRAW_W:
+            # Confirmed drawing: the "waiting to see" period is over.
+            self._start_issued_at = None
             return
 
         self._backoff_until = now + IGNORED_START_BACKOFF_SECONDS
-        self._started_at = None
+        self._start_issued_at = None
         _LOGGER.info(
             "The car did not draw within %ds of starting; backing off for "
             "%d minutes",
@@ -577,6 +610,11 @@ class SolarController:
                 self._coordinator.async_cancel_background_retry(charge_key)
             if stop_sent is not False:
                 self._started_at = None
+                # A stopped charge is no longer waiting to see if the
+                # car draws. Left set, a stale mark here would anchor
+                # the *next* start's draw-grace clock to this one's
+                # issue time instead of its own.
+                self._start_issued_at = None
 
         elif decision.action is SolarAction.START:
             sent = True
@@ -613,6 +651,21 @@ class SolarController:
                     )
                 if start_sent is not False:
                     self._started_at = now
+
+                # The draw-grace clock, unlike the minimum-run clock
+                # just above, must not restart on every repeat START:
+                # decide() has no memory of already having started, so
+                # while the charger sits idle with surplus sustained
+                # it returns START on every tick. Resetting this on
+                # each one would mean the 300 s grace never elapses,
+                # and the car would be restarted, uselessly, until the
+                # hourly rate limit — a backstop against bugs, not a
+                # substitute for this — finally blunts it. A queued
+                # send (None) does not count either: it has not
+                # reached the charger, so there is nothing yet for the
+                # car to have ignored.
+                if start_sent is True and self._start_issued_at is None:
+                    self._start_issued_at = now
 
         elif decision.action is SolarAction.SET:
             if decision.target_watts is None:
