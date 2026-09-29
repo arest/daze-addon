@@ -154,6 +154,8 @@ data:
 
 ## Automation Examples
 
+For charging from solar surplus, see [docs/solar-surplus-charging.md](docs/solar-surplus-charging.md) — a worked setup that follows your export, respects the charger's 1.5 kW floor, and reads its bounds from the entity rather than hardcoding them.
+
 ### Stop charging when energy price is high
 
 ```yaml
