@@ -95,6 +95,7 @@ If your tokens expire, the integration will automatically prompt you to re-enter
 | `sensor.daze_last_session_end` | Last Session End | `timestamp` | — | |
 | `sensor.daze_lifetime_energy` | Lifetime Energy | `energy` | `total_increasing` | Wh |
 | `sensor.daze_total_sessions` | Total Sessions | — | `total_increasing` | sessions |
+| `sensor.daze_solar_surplus` | Solar surplus | `power` | `measurement` | W |
 
 #### Diagnostic sensors
 
@@ -113,6 +114,14 @@ If your tokens expire, the integration will automatically prompt you to re-enter
 | Number | `number.daze_max_charging_current` | Current | Charging current limit, bounded by the charger's own floor and the installation rating |
 | Number | `number.daze_max_charging_power` | Power | The same limit in watts, bounded by the charger's 1.5 kW floor |
 | Select | `select.daze_operation_mode` | Operation Mode | Switch between eco, fast, scheduled |
+| Select | `select.daze_solar_control` | Solar control | `off` / `simulate` / `active` |
+| Number | `number.daze_solar_reserve` | Solar reserve | Watts to leave for the house before the car gets any |
+
+No entity in this integration sets an explicit name or translation
+key, so none of the IDs above are guaranteed — they follow the device
+name, and a renamed device changes the prefix. Confirm the real object
+IDs for your own install under **Settings → Devices & services →
+[your device] → entities** before using them in an automation.
 
 ---
 
@@ -149,6 +158,88 @@ service: daze.set_charging_current
 data:
   current: 16000
 ```
+
+---
+
+## Solar control
+
+Charges the car from what the house would otherwise export, adjusting
+the limit as production and load change, and stopping when there is not
+enough surplus to charge at all.
+
+The controller itself defaults to **off**, so nothing runs before the
+entities exist. But the **Solar control** select lands on `simulate`
+the first time it is added — a fresh install never actually shows
+`off`. In `simulate` it decides and logs but sends nothing to the
+charger; nothing reaches hardware until you pick `active` yourself.
+
+1. In the integration's options, pick your **grid import** and **grid
+   export** power sensors, and answer **grid supply**: single-phase or
+   three-phase. This is a declaration, not something the integration
+   can detect — the Daze API does not report how many phases feed the
+   house — and solar control refuses to arm until it is answered. If
+   you are upgrading from an earlier version, this is the field that
+   will make solar control refuse to arm until you go and set it.
+2. Leave **Solar control** on `simulate`. The select's attributes show
+   the surplus it sees and what it would have done.
+3. Leave it for a day, then work through the validation checklist
+   below before switching to `active`.
+4. If the decisions look right, set it to `active`.
+
+It never imports to charge: the charger cannot run below 1500 W, so
+when surplus falls below that it stops rather than topping up from the
+grid.
+
+Changing the charging limit yourself — from the dashboard, or from your
+own automation — turns solar control off. Starting or stopping the
+charge by hand does the same. It does not fight you.
+
+### When the control is unavailable
+
+Solar control refuses to arm rather than guess, and says why in the
+log (`Solar control cannot run: …`). It is unavailable when:
+
+- **Both grid sensors are not set.** It has nothing to measure.
+- **The grid supply has not been declared.** The charger cannot tell
+  the integration how many phases feed the house, so you have to say
+  so yourself, and there is no default. A three-phase meter reports
+  surplus added up across all three phases; a single-phase charger can
+  only use one of them, so following that figure would load one phase
+  with all three phases' surplus. For the same reason, a **three-phase
+  supply with a single-phase charger is refused outright** — see the
+  YAML guide below if that is your setup.
+- **The charger's own eco mode is on, or it has a schedule set.**
+  Something else is already deciding when the car charges, and two
+  controllers fighting over one charger is worse than either alone.
+
+### The reserve
+
+**Solar reserve** is watts to leave for the house before the car gets
+any: set it to 500 and the car is only offered surplus above 500 W. It
+is saved with the integration's settings and survives a restart.
+
+### Before you trust it
+
+A day in `simulate` is only useful if you actually check it against
+what happened. Before switching to `active`:
+
+- **Does the surplus figure go to zero at night?** If it does not, a
+  sensor's sign convention is inverted.
+- **Does it rise when the car stops charging?** It should not — that
+  means the car's own draw is being double-counted.
+- **Set a schedule on the charger and confirm solar control refuses to
+  arm, then clear it and confirm it arms again.** This is the one guard
+  whose positive direction has never been confirmed on real hardware:
+  it reads the charger's `nextScheduleInfo` field, and all that has
+  actually been observed is that the field is null when no schedule is
+  set.
+- **Confirm a smart-tariff pause does not populate `nextScheduleInfo`**
+  and so does not falsely refuse to arm.
+- **Check the logged decisions against what actually happened** before
+  switching to `active`.
+
+For a version you build and tune yourself, see
+[docs/solar-surplus-charging.md](docs/solar-surplus-charging.md).
 
 ---
 

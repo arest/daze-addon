@@ -7,6 +7,11 @@ exporting it.
 This is a worked example, not part of the integration. Everything here
 goes in your Home Assistant configuration.
 
+> The integration can now do this itself — see **Solar control** in the
+> README. This guide remains for setups the built-in version does not
+> fit: a house battery to arbitrate with, tariff windows, or anything
+> needing logic of your own.
+
 ---
 
 ## What you need
