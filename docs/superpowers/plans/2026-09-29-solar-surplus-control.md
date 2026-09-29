@@ -2246,9 +2246,17 @@ def test_a_collapse_is_evaluated_without_waiting_for_the_tick() -> None:
     hass.states.set("sensor.grid_export", "0")
     hass.states.set("sensor.grid_import", "4000")
 
+    before = controller.surplus_w
+    assert before is not None, "the healthy ticks should have left a figure"
+
     asyncio.run(controller.async_sensor_changed())
 
+    # Compare against the pre-collapse figure rather than asserting these
+    # are merely set. A fast path that did nothing at all would leave both
+    # holding their values from the three healthy ticks, so "is not None"
+    # passes under exactly the regression this test exists to catch.
     assert controller.surplus_w is not None
+    assert controller.surplus_w < before, "the collapse was not evaluated"
     assert controller.last_decision is not None
 
 
@@ -2408,7 +2416,9 @@ without stopping a healthy charge, and remembering the mode.
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/test_solar_controller.py`, before `_main`:
+Append to `tests/test_solar_controller.py`, before `_main`. Add
+`import time` to the file's imports if it is not already there — the
+seeding test below reads `time.monotonic()`:
 
 ```python
 def test_three_phase_supply_with_a_single_phase_charger_is_refused() -> None:
@@ -2441,7 +2451,16 @@ def test_a_charge_already_running_counts_as_having_run() -> None:
 
     asyncio.run(controller.async_tick())
 
+    # Assert how far back the mark was seeded, not merely that one exists.
+    # Seeding it to the present moment would satisfy "is not None" while
+    # leaving the charge unstoppable for the next ten minutes, which is the
+    # bug this seeding exists to prevent.
     assert controller._started_at is not None
+    elapsed = time.monotonic() - controller._started_at
+    assert elapsed >= solar.MIN_RUN_SECONDS, (
+        "a charge already running must count as having served its minimum "
+        f"run time, but the mark was seeded only {elapsed:.0f}s back"
+    )
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
