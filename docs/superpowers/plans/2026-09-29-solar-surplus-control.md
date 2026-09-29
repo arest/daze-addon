@@ -1739,7 +1739,9 @@ And call it in `async_tick`, immediately after `self._track_thresholds(state, no
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python3 tests/test_solar_controller.py`
-Expected: PASS, `9 passed, 0 failed`
+Expected: PASS, `0 failed`, with one more test than the suite had before
+this task. The absolute count is deliberately not stated: Task 4's review
+added twelve tests to this file, so any figure written here ages badly.
 
 - [ ] **Step 5: Lint and full suite**
 
@@ -2370,7 +2372,8 @@ to the `homeassistant.helpers.event` stub in `tests/test_solar_controller.py`.
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python3 tests/test_solar_controller.py`
-Expected: PASS, `11 passed, 0 failed`
+Expected: PASS, `0 failed`, with two more tests than the suite had before
+this task. The absolute count is deliberately not stated; see Task 5.
 
 - [ ] **Step 5: Lint and full suite**
 
@@ -2561,7 +2564,9 @@ Also make `available` account for an unsupported setup:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `python3 tests/test_solar_controller.py`
-Expected: PASS, `14 passed, 0 failed`
+Expected: PASS, `0 failed`, with three more tests than the suite had
+before this task. The absolute count is deliberately not stated; see
+Task 5.
 
 - [ ] **Step 6: Lint and full suite**
 
