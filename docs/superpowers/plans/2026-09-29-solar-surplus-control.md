@@ -2509,7 +2509,13 @@ In `async_tick`, immediately after the `SolarMode.OFF` check:
             return
 ```
 
-And seed the start time, immediately before `self._check_ignored_start(now)`:
+And seed the start time. Put it immediately after
+`self._track_thresholds(state, now)` and **outside** the
+`if self._mode is SolarMode.ACTIVE:` block that now wraps
+`self._check_ignored_start(now)`. Seeding must happen in every mode: a
+`simulate` dry run of a charge that is already running has to preview the
+stop, and under the `ACTIVE` gate it would instead report "the minimum
+run time has not elapsed" forever:
 
 ```python
         # Timers begin at zero after a restart. A charge that is
