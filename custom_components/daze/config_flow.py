@@ -368,11 +368,15 @@ class DazeOptionsFlowHandler(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Let the user choose how often the charger is polled.
+        """Let the user choose the poll interval and the grid sensors.
 
         Faster polling makes the entities more responsive at the cost
         of more requests against the Daze cloud API. The entry reloads
         on save, so the new interval takes effect immediately.
+
+        The two grid sensors feed solar surplus control and are
+        optional: leaving them empty is a supported configuration, and
+        solar control simply refuses to arm without them.
         """
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
