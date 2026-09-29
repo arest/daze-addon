@@ -1258,17 +1258,25 @@ def test_solar_select_refuses_to_arm_without_sensors() -> None:
     enforced in the method that acts, and explained where the caller
     can see it. Asserting `available is False` instead would pass
     against a select that happily arms itself with no sensors at all.
+
+    Checked for both non-off options, not just "active": narrowing the
+    guard to `option == "active"` would let a user or automation select
+    "simulate" with no grid sensors configured. The controller would
+    then tick, find nothing to read, and do nothing — while the select
+    still displays "simulate", as though a dry run were under way. That
+    is "leaving off" in every way that matters, just quietly.
     """
-    entity, controller = _solar_select(configured=False)
+    for option in ("simulate", "active"):
+        entity, controller = _solar_select(configured=False)
 
-    raised = False
-    try:
-        asyncio.run(entity.async_select_option("active"))
-    except HomeAssistantError:
-        raised = True
+        raised = False
+        try:
+            asyncio.run(entity.async_select_option(option))
+        except HomeAssistantError:
+            raised = True
 
-    assert raised, "arming without sensors was not refused"
-    assert controller.mode is None, "the mode was changed anyway"
+        assert raised, f"arming without sensors was not refused for {option!r}"
+        assert controller.mode is None, "the mode was changed anyway"
 
 
 def test_solar_select_arms_once_the_sensors_are_there() -> None:
@@ -1281,10 +1289,22 @@ def test_solar_select_arms_once_the_sensors_are_there() -> None:
     assert controller.mode.value == "simulate"
 
 
-def test_the_reserve_survives_a_restart() -> None:
-    """An in-memory reserve returns to 0 W on every restart, and 0 W
-    means the house gets nothing before the car does. A setting that
-    exists to hold power back must not quietly stop holding it.
+def test_setting_the_reserve_writes_it_to_config_entry_options() -> None:
+    """The write half of the restart guarantee: this only proves the
+    number entity persists what it is given.
+
+    An in-memory-only reserve returns to 0 W on every restart, and 0 W
+    means the house gets nothing before the car does — a setting that
+    exists to hold power back must not quietly stop holding it. But
+    that guarantee has two halves, and this test cannot see the other
+    one: nothing here restarts anything or re-reads the option back
+    into a controller. The read half — `async_setup_entry` passing
+    `entry.options.get(CONF_SOLAR_RESERVE, DEFAULT_SOLAR_RESERVE)` into
+    `SolarController(...)` on the next setup — is covered separately by
+    `test_async_setup_entry_seeds_the_controllers_reserve_from_options`
+    in tests/test_init_entry.py, the only place in the tree that calls
+    `async_setup_entry` at all. Together the two are the round trip;
+    apart, each name says only what its own body checks.
     """
     number_mod = sys.modules["daze_entities_under_test.number"]
     const_mod = sys.modules["daze_entities_under_test.const"]

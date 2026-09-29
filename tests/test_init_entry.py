@@ -335,6 +335,16 @@ class FakeServiceCoordinator:
         self.settle_calls += 1
 
 
+class FakeDeviceRegistry:
+    """Stand-in for the device registry `dr.async_get(hass)` returns."""
+
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+
+    def async_get_or_create(self, **kwargs: Any) -> None:
+        self.created.append(kwargs)
+
+
 REACHABLE_DATA: dict[str, Any] = {"active": True}
 OFFLINE_DATA: dict[str, Any] = {"active": False}
 
@@ -349,6 +359,76 @@ def _register(
     coordinator.solar_controller = FakeSolarController()
     daze_init._async_register_services(hass, entry, coordinator)
     return hass, entry, coordinator
+
+
+# ------------------------------------------------------------------
+# async_setup_entry
+# ------------------------------------------------------------------
+
+
+async def _fake_async_setup_coordinator(
+    hass: Any, entry: Any
+) -> FakeServiceCoordinator:
+    """Stand in for the real coordinator construction async_setup_entry
+    calls first.
+
+    The real ``async_setup_coordinator`` builds an auth client, an API
+    client and performs a live first refresh — none of that is what
+    this test is about, and none of it is safe to run here. Swapped in
+    by monkeypatching ``daze_init.async_setup_coordinator`` for the
+    single test that needs ``async_setup_entry`` to run end to end.
+    """
+    return FakeServiceCoordinator(dict(REACHABLE_DATA))
+
+
+def test_async_setup_entry_seeds_the_controllers_reserve_from_options() -> (
+    None
+):
+    """The read half of the restart guarantee: a reserve persisted to
+    the config entry's options must reach the controller on the next
+    setup, not just default back to 0 W.
+
+    ``tests/test_entities.py``'s
+    ``test_setting_the_reserve_writes_it_to_config_entry_options``
+    already covers the write half — the number entity persisting a new
+    value. Nothing before this test called ``async_setup_entry`` at
+    all, so the read half —
+    ``reserve_w=entry.options.get(CONF_SOLAR_RESERVE,
+    DEFAULT_SOLAR_RESERVE)`` in the ``SolarController(...)`` call — was
+    unverified. Dropping that keyword (the constructor already
+    defaults ``reserve_w`` to 0.0 on its own) passed every other test
+    in the tree: every restart would then silently hand the house's
+    entire reserved share to the car.
+
+    ``async_setup_coordinator`` and the device registry are
+    monkeypatched for the duration of this one test — the former would
+    otherwise need a live API client and network access, the latter is
+    stubbed globally to return ``None`` since no other test in this
+    file calls ``async_get_or_create`` on it.
+    """
+    entry = FakeEntry(
+        data={
+            const.CONF_SERIAL_NUMBER: "SER1",
+            const.CONF_NETWORK_UID: "NET1",
+        },
+        options={CONF_SOLAR_RESERVE: 1500},
+    )
+    hass = FakeHass()
+
+    original_setup_coordinator = daze_init.async_setup_coordinator
+    original_async_get = daze_init.dr.async_get
+    daze_init.async_setup_coordinator = _fake_async_setup_coordinator
+    daze_init.dr.async_get = lambda _hass: FakeDeviceRegistry()
+    try:
+        asyncio.run(daze_init.async_setup_entry(hass, entry))
+    finally:
+        daze_init.async_setup_coordinator = original_setup_coordinator
+        daze_init.dr.async_get = original_async_get
+
+    controller = hass.data[DOMAIN][entry.entry_id]["solar_controller"]
+    assert controller.reserve_w == 1500, (
+        "the persisted reserve never reached the controller"
+    )
 
 
 # ------------------------------------------------------------------
