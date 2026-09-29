@@ -1236,6 +1236,26 @@ def test_disarming_clears_the_clocks_a_rearm_would_misread() -> None:
     assert controller._started_at is None
 
 
+def test_disarming_clears_the_threshold_timers_too() -> None:
+    """The above/below-floor clocks must not survive a disarm either.
+
+    _track_thresholds only ever sets these from None, never restarts
+    them while already running, so a stale _above_since left behind by
+    a skipped clear would read as "surplus has been sufficient since
+    before the disarm" the moment solar control is re-armed — skipping
+    the confirmation delay the design requires before the first start.
+    """
+    controller, _, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+    controller._above_since = 50.0
+    controller._below_since = 60.0
+
+    controller.disarm("the charging limit was set manually")
+
+    assert controller._above_since is None
+    assert controller._below_since is None
+
+
 def test_an_unplug_inside_the_grace_does_not_survive_to_punish_a_reconnect() -> (
     None
 ):

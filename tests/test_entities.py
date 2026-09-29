@@ -1073,6 +1073,144 @@ def test_a_manual_charge_toggle_disarms_solar_control() -> None:
     assert coordinator.solar_controller.disarmed is True
 
 
+def test_a_manual_power_change_disarms_solar_control() -> None:
+    """The power view of the same setting is a control too.
+
+    number.py and switch.py wire the same helper onto four call sites
+    in total; the current entity and the start toggle are covered
+    above. This is the power entity's own copy, not shared code, so it
+    needs its own regression test.
+    """
+    class Ctl:
+        disarmed = False
+
+        def disarm(self, reason: str) -> None:
+            self.disarmed = True
+
+    entity, coordinator, _ = make_power()
+    coordinator.solar_controller = Ctl()
+
+    asyncio.run(entity.async_set_native_value(4000))
+
+    assert coordinator.solar_controller.disarmed is True
+
+
+def test_a_manual_charge_stop_disarms_solar_control() -> None:
+    """Stopping a charge is a control too, and the direction that
+    matters most: without this, the car the person just told to stop
+    is restarted by solar control within two minutes, against the
+    person who is standing right there.
+    """
+    class Ctl:
+        disarmed = False
+
+        def disarm(self, reason: str) -> None:
+            self.disarmed = True
+
+    data = dict(BASE_DATA)
+    data["evseStatus"] = "charging"
+    coordinator = FakeCoordinator(data)
+    coordinator.solar_controller = Ctl()
+    client = FakeApi()
+
+    switch_module = sys.modules["daze_entities_under_test.switch"]
+    entity = switch_module.DazeWallboxSwitchEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+
+    asyncio.run(entity.async_turn_off())
+
+    assert coordinator.solar_controller.disarmed is True
+
+
+def test_a_rejected_limit_change_still_disarms_solar_control() -> None:
+    """A value the charger will refuse still counts as taking over.
+
+    _disarm_solar is called before the validation check, not after: a
+    user who types a current above the installation rating has still
+    expressed the intent to take over, and solar control overwriting
+    it a second later is exactly what the rule exists to prevent.
+    Pins the placement rather than just the presence — every value in
+    the tests above happens to be one the charger accepts, so moving
+    the call after validation would still pass them all.
+    """
+    class Ctl:
+        disarmed = False
+
+        def disarm(self, reason: str) -> None:
+            self.disarmed = True
+
+    coordinator = FakeCoordinator(dict(BASE_DATA))
+    coordinator.solar_controller = Ctl()
+    entity, _, client = make_number()
+    entity.coordinator = coordinator
+
+    asyncio.run(entity.async_set_native_value(999999))
+
+    assert coordinator.solar_controller.disarmed is True
+    assert client.calls == [], "an invalid value must never reach the API"
+
+
+def test_an_offline_charge_start_still_disarms_solar_control() -> None:
+    """An unreachable charger does not cancel out the user's intent.
+
+    _disarm_solar is called before the offline check, not after: a
+    user whose charger is briefly unreachable has still expressed the
+    intent to take over. Pins the placement — every switch test above
+    uses a reachable charger, so moving the call after the offline
+    check would still pass them all.
+    """
+    class Ctl:
+        disarmed = False
+
+        def disarm(self, reason: str) -> None:
+            self.disarmed = True
+
+    data = {"evseStatus": "idle", "active": False}
+    coordinator = FakeCoordinator(data)
+    coordinator.solar_controller = Ctl()
+    client = FakeApi()
+
+    switch_module = sys.modules["daze_entities_under_test.switch"]
+    entity = switch_module.DazeWallboxSwitchEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+
+    asyncio.run(entity.async_turn_on())
+
+    assert coordinator.solar_controller.disarmed is True
+    assert client.calls == [], "an offline charger must never be sent a command"
+
+
+def test_an_offline_charge_stop_still_disarms_solar_control() -> None:
+    """Same placement guarantee on the stop side, the direction the
+    switch's own docstring names as the one that matters most.
+    """
+    class Ctl:
+        disarmed = False
+
+        def disarm(self, reason: str) -> None:
+            self.disarmed = True
+
+    data = {"evseStatus": "charging", "active": False}
+    coordinator = FakeCoordinator(data)
+    coordinator.solar_controller = Ctl()
+    client = FakeApi()
+
+    switch_module = sys.modules["daze_entities_under_test.switch"]
+    entity = switch_module.DazeWallboxSwitchEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+
+    asyncio.run(entity.async_turn_off())
+
+    assert coordinator.solar_controller.disarmed is True
+    assert client.calls == [], "an offline charger must never be sent a command"
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [
