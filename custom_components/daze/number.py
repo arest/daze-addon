@@ -174,6 +174,16 @@ class DazeWallboxNumberEntity(
         self.coordinator.async_notify_limit_listeners()
         self._notify_error(message)
 
+    def _disarm_solar(self) -> None:
+        """Hand control back to the user.
+
+        Solar control writes through the API client, so anything
+        arriving here came from a person or their automation.
+        """
+        controller = self.coordinator.solar_controller
+        if controller is not None:
+            controller.disarm("the charging limit was set manually")
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Stop showing the request once the charger reports it."""
@@ -196,6 +206,8 @@ class DazeWallboxNumberEntity(
                 int_value,
             )
             return
+
+        self._disarm_solar()
 
         # Stop here rather than spending a round trip on a value the
         # charger is known to reject.
@@ -413,6 +425,8 @@ class DazeWallboxPowerEntity(
             )
             return
 
+        self._disarm_solar()
+
         problem = validate_charging_current(milliamps, self.coordinator.data)
         if problem is not None:
             _LOGGER.info("Refusing to send %d W: %s", watts, problem)
@@ -501,6 +515,16 @@ class DazeWallboxPowerEntity(
         self.async_write_ha_state()
         self.coordinator.async_notify_limit_listeners()
         self._notify_error(message)
+
+    def _disarm_solar(self) -> None:
+        """Hand control back to the user.
+
+        Solar control writes through the API client, so anything
+        arriving here came from a person or their automation.
+        """
+        controller = self.coordinator.solar_controller
+        if controller is not None:
+            controller.disarm("the charging limit was set manually")
 
     @callback
     def _handle_coordinator_update(self) -> None:

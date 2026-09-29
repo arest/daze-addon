@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
@@ -15,9 +15,13 @@ from .const import (
     CONF_DEVICE_PROFILE,
     CONF_EVSE_NAME,
     CONF_FIRMWARE_VERSION,
+    CONF_GRID_EXPORT_SENSOR,
+    CONF_GRID_IMPORT_SENSOR,
     CONF_NETWORK_UID,
     CONF_SERIAL_NUMBER,
     CONF_SOFTWARE_VERSION,
+    CONF_SOLAR_RESERVE,
+    DEFAULT_SOLAR_RESERVE,
     DOMAIN,
     PLATFORMS,
     SERVICE_SET_CHARGING_CURRENT,
@@ -26,6 +30,7 @@ from .const import (
 )
 from .coordinator import DazeDataUpdateCoordinator, async_setup_coordinator
 from .payload import charger_offline_reason
+from .solar_controller import SolarController
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -68,6 +73,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         configuration_url="https://webportal.dazeservice.com",
     )
 
+    solar_controller = SolarController(
+        hass=hass,
+        coordinator=coordinator,
+        import_entity=entry.options.get(CONF_GRID_IMPORT_SENSOR),
+        export_entity=entry.options.get(CONF_GRID_EXPORT_SENSOR),
+        reserve_w=entry.options.get(
+            CONF_SOLAR_RESERVE, DEFAULT_SOLAR_RESERVE
+        ),
+    )
+    # The entities reach the controller through the coordinator, which
+    # every one of them already holds.
+    coordinator.solar_controller = solar_controller
+    await solar_controller.async_start()
+
     # Store coordinator and API client in hass.data for entity platforms
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
@@ -75,6 +94,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "api_client": coordinator.api_client,
         "serial_number": entry.data[CONF_SERIAL_NUMBER],
         "network_uid": entry.data[CONF_NETWORK_UID],
+        "solar_controller": solar_controller,
+        "reload_signature": _reload_signature(entry),
     }
 
     # Forward setup to entity platforms
@@ -109,6 +130,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # alive but inert.
         entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
         if entry_data is not None:
+            controller = entry_data.get("solar_controller")
+            if controller is not None:
+                await controller.async_stop()
+
             coordinator: DazeDataUpdateCoordinator = entry_data["coordinator"]
             coordinator.async_shutdown_timers()
 
@@ -118,10 +143,38 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
+def _reload_signature(entry: ConfigEntry) -> tuple[Any, Any]:
+    """Return the parts of an entry whose change needs a reload.
+
+    The solar reserve is deliberately absent. It is applied live by the
+    controller, so rewriting it is not a reason to rebuild the entry;
+    everything else — credentials, the poll interval, the grid sensors
+    the controller is constructed with — is.
+    """
+    options = {
+        key: value
+        for key, value in entry.options.items()
+        if key != CONF_SOLAR_RESERVE
+    }
+    return (dict(entry.data), options)
+
+
 async def _async_update_listener(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> None:
     """Handle config entry update (e.g., re-auth token update)."""
+    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    signature = _reload_signature(entry)
+
+    if entry_data is not None and entry_data.get("reload_signature") == (
+        signature
+    ):
+        _LOGGER.debug(
+            "Config entry %s changed in a way that needs no reload",
+            entry.entry_id,
+        )
+        return
+
     _LOGGER.debug("Config entry updated for %s — reloading", entry.entry_id)
     await hass.config_entries.async_reload(entry.entry_id)
 
@@ -161,6 +214,10 @@ def _async_register_services(
 
     async def _handle_start_charge(call: ServiceCall) -> None:
         """Start charging."""
+        if coordinator.solar_controller is not None:
+            coordinator.solar_controller.disarm(
+                "the charge was started by a service call"
+            )
         _refuse_if_offline()
 
         try:
@@ -179,6 +236,10 @@ def _async_register_services(
 
     async def _handle_stop_charge(call: ServiceCall) -> None:
         """Stop charging."""
+        if coordinator.solar_controller is not None:
+            coordinator.solar_controller.disarm(
+                "the charge was stopped by a service call"
+            )
         _refuse_if_offline()
 
         try:
@@ -198,6 +259,10 @@ def _async_register_services(
     async def _handle_set_charging_current(call: ServiceCall) -> None:
         """Set the maximum charging current."""
         current: int = call.data["current"]
+        if coordinator.solar_controller is not None:
+            coordinator.solar_controller.disarm(
+                "the charging current was set by a service call"
+            )
         _refuse_if_offline()
 
         try:

@@ -249,6 +249,9 @@ class FakeCoordinator(StubDataUpdateCoordinator):
         self.background: list[dict[str, Any]] = []
         self.limit_state = optimistic_module.OptimisticState()
         self.limit_listeners: list[Any] = []
+        # Mirrors the real coordinator, which declares this so entities
+        # and services can read it without getattr.
+        self.solar_controller: Any = None
 
     def async_add_limit_listener(self, listener: Any) -> Any:
         """Register a redraw callback."""
@@ -1015,6 +1018,59 @@ def test_switch_clears_its_pending_state_when_retries_fail() -> None:
 
     assert entity.is_on is not True, "the toggle still asserts the command"
     assert len(notifications) == 1
+
+
+def test_a_manual_limit_change_disarms_solar_control() -> None:
+    """Touching the control means you want manual control.
+
+    The controller writes through the API client, never the entity, so
+    any write arriving here is by definition external. That makes the
+    rule mechanical rather than a flag that could be wrong.
+    """
+    class Ctl:
+        mode = "active"
+        disarmed = False
+
+        def disarm(self, reason: str) -> None:
+            self.disarmed = True
+
+    coordinator = FakeCoordinator(dict(BASE_DATA))
+    coordinator.solar_controller = Ctl()
+    entity, _, _ = make_number()
+    entity.coordinator = coordinator
+
+    asyncio.run(entity.async_set_native_value(16000))
+
+    assert coordinator.solar_controller.disarmed is True
+
+
+def test_a_manual_charge_toggle_disarms_solar_control() -> None:
+    """The switch is a control too.
+
+    Without this the user presses the toggle, and the next tick — at
+    most two minutes later — sees a connected car and sustained surplus
+    and commands the opposite. Solar control would be fighting the
+    person holding the button.
+    """
+    class Ctl:
+        disarmed = False
+
+        def disarm(self, reason: str) -> None:
+            self.disarmed = True
+
+    coordinator = FakeCoordinator(dict(BASE_DATA))
+    coordinator.solar_controller = Ctl()
+    client = FakeApi()
+
+    switch_module = sys.modules["daze_entities_under_test.switch"]
+    entity = switch_module.DazeWallboxSwitchEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+
+    asyncio.run(entity.async_turn_on())
+
+    assert coordinator.solar_controller.disarmed is True
 
 
 def _main() -> int:

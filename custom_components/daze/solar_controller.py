@@ -103,6 +103,7 @@ class SolarController:
         coordinator: DazeDataUpdateCoordinator,
         import_entity: str | None,
         export_entity: str | None,
+        reserve_w: float = 0.0,
     ) -> None:
         """Initialise in the off state.
 
@@ -115,6 +116,11 @@ class SolarController:
             coordinator: Source of charger state and the API client.
             import_entity: Grid import power sensor, or None.
             export_entity: Grid export power sensor, or None.
+            reserve_w: Watts to leave for the house, restored from the
+                config entry's options. Held there rather than only in
+                memory: a reserve that returns to zero on every restart
+                gives the car everything the house was keeping, and
+                does it silently.
 
         """
         self._hass = hass
@@ -123,7 +129,7 @@ class SolarController:
         self._export_entity = export_entity
 
         self._mode = SolarMode.OFF
-        self._reserve_w = 0.0
+        self._reserve_w = max(0.0, float(reserve_w))
         self._smoother = SurplusSmoother()
         self._last_decision: SolarDecision | None = None
         self._listeners: list[Callable[[], None]] = []
@@ -175,6 +181,32 @@ class SolarController:
         # back-off from a start that may be long irrelevant by now.
         self._start_issued_at = None
         _LOGGER.info("Solar control set to %s", value.value)
+        self._notify()
+
+    def disarm(self, reason: str) -> None:
+        """Turn solar control off because something else took over.
+
+        Called when a limit change arrives through an entity or a
+        service, which by construction means it did not come from here.
+
+        Every clock of the episode goes with the mode, not just the two
+        threshold timers. A start this controller issued is no longer
+        ours to judge the car against: left set, _start_issued_at is
+        read hours later, against a car that has long since finished,
+        and arms a 60-minute back-off for a start nobody is waiting on.
+        A back-off already armed goes too — it was armed to stop this
+        controller retrying, and the user has just taken over anyway.
+        """
+        if self._mode is SolarMode.OFF:
+            return
+
+        _LOGGER.info("Solar control disarmed: %s", reason)
+        self._mode = SolarMode.OFF
+        self._above_since = None
+        self._below_since = None
+        self._started_at = None
+        self._start_issued_at = None
+        self._backoff_until = 0.0
         self._notify()
 
     @property

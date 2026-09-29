@@ -118,6 +118,11 @@ class DazeDataUpdateCoordinator(
         # until the next refresh.
         self._limit_state = OptimisticState()
         self._limit_listeners: list[Callable[[], None]] = []
+        # Set by async_setup_entry. Declared here so every entity and
+        # service can read it directly: a getattr default would turn a
+        # wiring mistake into silent no-disarm, which is the failure
+        # this whole mechanism exists to prevent.
+        self.solar_controller: Any = None
 
         super().__init__(
             hass,

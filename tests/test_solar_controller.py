@@ -905,7 +905,7 @@ def test_a_sustained_idle_start_does_not_wait_for_the_rate_limit() -> None:
     assert controller._backoff_until > 0
     assert len(coordinator.api_client.calls) == 2
     assert coordinator.api_client.calls == [
-        ("current", coordinator.api_client.calls[0][1]),
+        ("current", 21700),
         ("start", coordinator.serial_number),
     ]
 
@@ -1210,6 +1210,74 @@ def test_a_successful_stop_cancels_its_background_retry() -> None:
     assert (
         f"{coordinator.serial_number}:charge" in coordinator.cancelled_retries
     )
+
+
+def test_disarming_clears_the_clocks_a_rearm_would_misread() -> None:
+    """Disarming ends the episode, not just the mode.
+
+    A start this controller issued, and the back-off that start could
+    still arm, must not survive into the next time solar control is
+    switched on. Left behind, a start issued at noon and abandoned at
+    12:01 is judged at 14:00 against a car that has long since
+    finished, arming a 60-minute back-off for a start nobody is
+    waiting on.
+    """
+    controller, _, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+    controller._start_issued_at = 100.0
+    controller._backoff_until = 1e9
+    controller._started_at = 100.0
+
+    controller.disarm("the charging limit was set manually")
+
+    assert controller.mode is controller_module.SolarMode.OFF
+    assert controller._start_issued_at is None
+    assert controller._backoff_until == 0.0
+    assert controller._started_at is None
+
+
+def test_an_unplug_inside_the_grace_does_not_survive_to_punish_a_reconnect() -> (
+    None
+):
+    """The guard order in _check_ignored_start matters, and the
+    existing suite cannot tell the orderings apart: its one test that
+    exercises the disconnected-car guard sets _start_issued_at to a
+    timestamp whose grace has already long expired, so it passes
+    whichever guard runs first.
+
+    Misplaced (grace checked before car_connected): a car unplugged at
+    T+60, still inside the 300 s grace, hits the grace guard first and
+    returns without clearing _start_issued_at. The mark survives. A
+    different car reconnecting later is then declined a start by
+    _carry_out's own outstanding-start guard, and once grace+30s
+    arrives with the stale mark still set and the reconnected car not
+    yet drawing, an hour-long back-off arms — punishing the new car for
+    the departed one's start.
+
+    Correct (car_connected checked before grace): the unplug at T+60
+    clears the mark immediately regardless of how little of the grace
+    has elapsed, so there is nothing left for grace+30s to arm.
+    """
+    controller, _, _ = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    start = 15_000_000.0
+    controller._start_issued_at = start
+
+    # The car unplugs 60s in — well inside the 300s grace.
+    controller._check_ignored_start(start + 60, car_connected=False)
+    assert controller._start_issued_at is None
+
+    # A different car reconnects; with the mark already clear this is
+    # a no-op either way.
+    controller._check_ignored_start(start + 120, car_connected=True)
+
+    # 30s past where the original start's grace would have elapsed.
+    controller._check_ignored_start(
+        start + solar.DRAW_GRACE_SECONDS + 30, car_connected=True
+    )
+
+    assert controller._backoff_until == 0.0
 
 
 def _main() -> int:

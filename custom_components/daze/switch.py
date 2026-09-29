@@ -126,6 +126,19 @@ class DazeWallboxSwitchEntity(
         self._optimistic.settle(actual)
         super()._handle_coordinator_update()
 
+    def _disarm_solar(self) -> None:
+        """Hand control back to the user.
+
+        Solar control starts and stops the charge through the API
+        client, so a toggle arriving here came from a person or their
+        automation. Without this the next tick reverses them: the car
+        is connected and the surplus is unchanged, so decide() returns
+        the opposite command within two minutes.
+        """
+        controller = self.coordinator.solar_controller
+        if controller is not None:
+            controller.disarm("charging was started or stopped manually")
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Start charging on the wallbox."""
         # Already charging — idempotent no-op
@@ -134,6 +147,8 @@ class DazeWallboxSwitchEntity(
                 "Switch turn_on called but already charging — skipping"
             )
             return
+
+        self._disarm_solar()
 
         offline = charger_offline_reason(self.coordinator.data)
         if offline is not None:
@@ -198,6 +213,8 @@ class DazeWallboxSwitchEntity(
                 "Switch turn_off called but not charging — skipping"
             )
             return
+
+        self._disarm_solar()
 
         offline = charger_offline_reason(self.coordinator.data)
         if offline is not None:
