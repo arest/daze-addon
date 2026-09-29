@@ -12,6 +12,7 @@ Run with pytest, or standalone:
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import types
@@ -225,8 +226,6 @@ def test_saving_the_form_preserves_the_solar_reserve() -> None:
     """
     handler = _handler({const.CONF_SOLAR_RESERVE: 2000, "poll_interval": 30})
 
-    import asyncio
-
     result = asyncio.run(
         handler.async_step_init({"poll_interval": 45})
     )
@@ -248,11 +247,48 @@ def test_saving_the_form_applies_a_submitted_field_over_the_old_value() -> (
     """
     handler = _handler({"poll_interval": 30})
 
-    import asyncio
-
     result = asyncio.run(handler.async_step_init({"poll_interval": 60}))
 
     assert result["data"]["poll_interval"] == 60
+
+
+def test_clearing_a_sensor_actually_clears_it() -> None:
+    """Every field this form owns — the two grid sensors and the
+    supply-phases question — is vol.Optional with no default, so a
+    user clearing one in the frontend omits it from user_input rather
+    than submitting an empty value. A blanket merge of the old options
+    over the submitted ones reads that omission as "unchanged" and
+    silently restores the stale entity_id, making a configured sensor
+    impossible to clear once set — even though the spec calls empty a
+    supported configuration. Only the solar reserve, the one key this
+    form does not own, may survive an omission this way.
+    """
+    handler = _handler(
+        {
+            const.CONF_GRID_IMPORT_SENSOR: "sensor.grid_import",
+            const.CONF_GRID_EXPORT_SENSOR: "sensor.grid_export",
+            "poll_interval": 30,
+        }
+    )
+
+    # The user cleared the import sensor picker and saved: the frontend
+    # omits a cleared vol.Optional field entirely rather than
+    # submitting it as empty.
+    result = asyncio.run(
+        handler.async_step_init(
+            {
+                const.CONF_GRID_EXPORT_SENSOR: "sensor.grid_export",
+                "poll_interval": 30,
+            }
+        )
+    )
+
+    assert const.CONF_GRID_IMPORT_SENSOR not in result["data"], (
+        "a cleared sensor was silently restored from the stale options"
+    )
+    assert result["data"][const.CONF_GRID_EXPORT_SENSOR] == (
+        "sensor.grid_export"
+    )
 
 
 def _main() -> int:

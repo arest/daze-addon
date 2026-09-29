@@ -32,6 +32,7 @@ from .const import (
     CONF_REFRESH_TOKEN,
     CONF_SERIAL_NUMBER,
     CONF_SOFTWARE_VERSION,
+    CONF_SOLAR_RESERVE,
     CONF_SUPPLY_PHASES,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
@@ -382,18 +383,23 @@ class DazeOptionsFlowHandler(OptionsFlow):
         solar control simply refuses to arm without them.
         """
         if user_input is not None:
-            # Merged, not replaced: this form has no field for the
-            # solar reserve — that entity is Task 7's own, and writes
-            # it to these same options directly — so saving this form
-            # verbatim as the new options would silently drop it back
-            # to 0 W on every save. Latent before this task; this task
-            # is what gives every existing user a reason to reopen this
-            # form, since solar control now refuses to arm until the
-            # supply question below is answered.
-            return self.async_create_entry(
-                title="",
-                data={**self._config_entry.options, **user_input},
-            )
+            # Carry forward only the one key this form does not own —
+            # the solar reserve, written directly to these same options
+            # by Task 7's own reserve entity — rather than blanket-
+            # merging the rest of the stored options over the submitted
+            # ones. Every field this form *does* own is vol.Optional
+            # with no default, so clearing one in the frontend omits it
+            # from user_input rather than submitting an empty value; a
+            # blanket merge would read that omission as "unchanged" and
+            # silently restore the stale value, making the sensors
+            # impossible to clear once set — the spec calls empty a
+            # supported configuration.
+            data = dict(user_input)
+            if CONF_SOLAR_RESERVE in self._config_entry.options:
+                data[CONF_SOLAR_RESERVE] = self._config_entry.options[
+                    CONF_SOLAR_RESERVE
+                ]
+            return self.async_create_entry(title="", data=data)
 
         current = self._config_entry.options.get(
             CONF_POLL_INTERVAL,

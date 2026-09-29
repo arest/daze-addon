@@ -1900,6 +1900,24 @@ def test_no_schedule_is_supported_through_a_real_merge() -> None:
     assert controller.unsupported_reason is None
 
 
+def test_build_states_own_schedule_read_survives_a_real_merge() -> None:
+    """unsupported_reason returns before decide() is ever reached, so
+    no tick-path test can tell _build_state's own nextScheduleInfo read
+    apart from the dropped "schedules" key it replaced — reverting it
+    passes every other test in the suite. Checked directly instead.
+    """
+    remote_info = dict(CHARGING_DATA)
+    remote_info["nextScheduleInfo"] = {"startTime": "2026-09-30T02:00:00Z"}
+    data = payload_module.merge_payload(remote_info, None)
+    controller, _, _ = build(data)
+
+    state = controller._build_state(
+        5000.0, controller_module.time.monotonic()
+    )
+
+    assert state.schedule_set is True
+
+
 def test_the_tick_stands_down_for_an_unsupported_setup_set_directly() -> None:
     """The select's own refusal in async_select_option is not the only
     way into ACTIVE: a restored mode (Task 10 gives the select
