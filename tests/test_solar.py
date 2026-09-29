@@ -221,15 +221,18 @@ def test_target_is_clamped_to_the_ceiling() -> None:
 
 
 def test_target_is_clamped_to_the_floor() -> None:
-    decision = solar.decide(
-        state(
-            charging=True,
-            surplus_w=1700,
-            floor_w=1600,
-            current_limit_w=7000,
-        )
-    )
-    assert decision.target_watts == 1700
+    """Calls target_watts() directly, not through decide().
+
+    Every call site inside decide() only reaches target_watts() after
+    an `available < floor_w` guard has already failed, so available
+    is always >= floor_w by the time decide() would use it and the
+    clamp can never fire there. The clamp still matters because
+    target_watts() is public and a later task's controller is the
+    first place that could call it outside decide()'s guarded
+    context, so it is exercised directly here instead.
+    """
+    target = solar.target_watts(state(surplus_w=500, floor_w=1600))
+    assert target == 1600
 
 
 def test_reserve_is_subtracted_before_anything_else() -> None:
