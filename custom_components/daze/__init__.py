@@ -137,8 +137,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             coordinator: DazeDataUpdateCoordinator = entry_data["coordinator"]
             coordinator.async_shutdown_timers()
 
-        # Clean up stored data
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        # Clean up stored data. DOMAIN itself may be absent — setup can
+        # raise before hass.data.setdefault(DOMAIN, {}) ever runs, and
+        # this same function is what tears down after that failure —
+        # so indexing hass.data[DOMAIN] directly would raise KeyError
+        # here instead of finishing the unload.
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
 
     return unload_ok
 

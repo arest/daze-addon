@@ -447,16 +447,38 @@ def test_unload_stops_the_controller_and_the_coordinators_timers() -> None:
     assert entry.entry_id not in hass.data[DOMAIN]
 
 
-def test_unloading_an_already_removed_entry_does_not_raise() -> None:
-    """The load-bearing guard: entry_data is None on a second unload,
-    or an unload after a failed setup. One level of indentation out,
-    ``entry_data.get(...)`` becomes ``None.get(...)`` and raises before
-    the rest of teardown — including the coordinator's own
-    ``async_shutdown_timers`` — ever runs.
+def test_a_second_unload_does_not_raise() -> None:
+    """entry_data is None on a second unload: DOMAIN is present in
+    hass.data (the first unload's own cleanup line put it there, or
+    left it there empty), but this entry's own key is already gone.
+    One level of indentation out, ``entry_data.get(...)`` becomes
+    ``None.get(...)`` and raises before the rest of teardown —
+    including the coordinator's own ``async_shutdown_timers`` — ever
+    runs.
     """
     entry = FakeEntry()
     hass = FakeHass(unload_ok=True)
-    hass.data[DOMAIN] = {}  # already cleaned up
+    hass.data[DOMAIN] = {}  # this entry already popped, DOMAIN remains
+
+    # Must not raise.
+    result = asyncio.run(daze_init.async_unload_entry(hass, entry))
+
+    assert result is True
+
+
+def test_an_unload_after_a_failed_setup_does_not_raise() -> None:
+    """entry_data is None for a different reason here: setup raised
+    before ``hass.data.setdefault(DOMAIN, {})`` ever ran, so DOMAIN
+    itself is missing from hass.data, not just this entry's key.
+
+    A fix for the second-unload case that indexes ``hass.data[DOMAIN]``
+    directly to clean up — rather than going through ``.get(DOMAIN,
+    {})`` the way the read above it already does — passes the
+    second-unload test above while still raising ``KeyError`` here.
+    """
+    entry = FakeEntry()
+    hass = FakeHass(unload_ok=True)
+    assert DOMAIN not in hass.data  # setup never got far enough to set it
 
     # Must not raise.
     result = asyncio.run(daze_init.async_unload_entry(hass, entry))
