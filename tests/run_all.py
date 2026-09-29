@@ -26,6 +26,7 @@ STANDALONE = (
     "test_qa_invariants.py",
     "test_entities.py",
     "test_solar.py",
+    "test_solar_controller.py",
 )
 
 
