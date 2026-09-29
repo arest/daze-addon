@@ -1308,7 +1308,19 @@ def test_an_unplug_inside_the_grace_does_not_survive_to_punish_a_reconnect() -> 
 
 def test_a_collapse_starts_the_stop_clock_when_it_happens() -> None:
     """The ten-minute stop delay must run from the collapse, not from
-    the moment the five-minute average catches up with it.
+    whenever the fast path's own evaluation actually gets around to it.
+
+    The sensor event lands well inside the fast path's own one-tick
+    spacing guard (10 s after the last evaluation, against a 120 s
+    guard), so it records the collapse but defers evaluating it; the
+    mark is only picked up by an ordinary tick a full TICK_SECONDS
+    later. An implementation that anchored the stop clock to whichever
+    "now" happened to be running at evaluation time, rather than to
+    the collapse itself, would stamp it with that later tick instead —
+    a difference this test can see only because the two are forced
+    apart by more than a spacing guard's width. A collapse observed and
+    evaluated in the same instant cannot tell these two apart, which is
+    why that shape is deliberately avoided here.
 
     Asserting the mark itself rather than "a stop was sent": no stop
     can be sent at the moment of a collapse — the smoothed figure is
@@ -1325,12 +1337,15 @@ def test_a_collapse_starts_the_stop_clock_when_it_happens() -> None:
     try:
         controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
 
-        # A healthy history: 3000 W drawn plus 5000 W exported.
-        for _ in range(2):
-            asyncio.run(controller.async_tick())
-            clock[0] += solar.TICK_SECONDS
+        # A healthy reading, so the average is not already near the
+        # floor and the fast path's own smoothed-figure check does not
+        # short-circuit before the spacing guard is even reached.
+        asyncio.run(controller.async_tick())
 
-        clock[0] += 1
+        # Well inside the fast path's spacing guard: the collapse is
+        # recorded, but the evaluation it would otherwise trigger is
+        # deferred to the next ordinary tick.
+        clock[0] += 10
         collapse_at = clock[0]
         hass.states.set(
             "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
@@ -1338,8 +1353,12 @@ def test_a_collapse_starts_the_stop_clock_when_it_happens() -> None:
         hass.states.set(
             "sensor.grid_export", "0", {"unit_of_measurement": "W"}
         )
-
         asyncio.run(controller.async_sensor_changed())
+
+        # The ordinary tick that actually evaluates the collapse,
+        # a full tick's width after it happened.
+        clock[0] += solar.TICK_SECONDS
+        asyncio.run(controller.async_tick())
 
         assert controller._below_since == collapse_at, (
             "the stop clock did not start at the collapse: "
@@ -1356,6 +1375,14 @@ def test_a_collapse_is_evaluated_once_not_on_every_sensor_update() -> None:
     updates runs a full evaluation, and each can rewrite the limit:
     the twenty-command hourly backstop is spent in minutes, and it is
     then not there for the stop when the stop finally comes.
+
+    Each repeat update here is spaced a tick-and-a-bit apart — wider
+    than the fast path's own one-tick minimum-spacing guard — so that
+    guard alone would permit a fresh evaluation every time. Only the
+    latch (armed once per collapse, cleared solely on recovery) can be
+    what holds the command count flat across them; a version with the
+    spacing guard but no latch would still pass a run of updates packed
+    inside one tick's width, which is why none are here.
     """
     controller, coordinator, hass = build()
     controller.mode = controller_module.SolarMode.ACTIVE
@@ -1378,9 +1405,11 @@ def test_a_collapse_is_evaluated_once_not_on_every_sensor_update() -> None:
 
         after_first = len(coordinator.api_client.calls)
 
-        # The sensor keeps reporting the same collapsed figures.
-        for _ in range(6):
-            clock[0] += 10
+        # The sensor keeps reporting the same collapsed figures, each
+        # update further apart than the fast path's own spacing guard —
+        # so only the latch, not that guard, can be holding this flat.
+        for _ in range(3):
+            clock[0] += solar.TICK_SECONDS + 5
             asyncio.run(controller.async_sensor_changed())
     finally:
         controller_module.time.monotonic = original_monotonic
