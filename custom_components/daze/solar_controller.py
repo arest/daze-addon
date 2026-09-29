@@ -191,18 +191,23 @@ class SolarController:
 
     @mode.setter
     def mode(self, value: SolarMode) -> None:
-        """Set the mode, resetting timers when it changes."""
+        """Set the mode, resetting every episode clock when it changes.
+
+        Shares _reset_episode with disarm(): both take solar control
+        out of ACTIVE, and a select round-trip (off, then back to
+        active) must end the episode exactly as thoroughly as disarm
+        does, or four of the eight clocks survive it. Left set,
+        _collapsed_since re-anchors the stop clock to a mark measured
+        during a period nobody was watching and can issue an immediate
+        STOP on arming; left set the other way, _charge_seeded stays
+        True over a queued STOP's None _started_at and the minimum-run
+        clock never re-seeds, so the charge can never be stopped.
+        """
         if value is self._mode:
             return
 
         self._mode = value
-        self._above_since = None
-        self._below_since = None
-        # A start issued before a detour through OFF or SIMULATE must
-        # not survive it: the first tick back in ACTIVE would evaluate
-        # it against an already-expired grace and arm an hour-long
-        # back-off from a start that may be long irrelevant by now.
-        self._start_issued_at = None
+        self._reset_episode()
         _LOGGER.info("Solar control set to %s", value.value)
         self._notify()
 
@@ -234,14 +239,34 @@ class SolarController:
 
         _LOGGER.info("Solar control disarmed: %s", reason)
         self._mode = SolarMode.OFF
+        self._reset_episode()
+        self._notify()
+
+    def _reset_episode(self) -> None:
+        """Clear every clock that describes the current charging episode.
+
+        One definition, called from both disarm() and the mode setter,
+        so "ending an episode" means the same thing regardless of
+        which door was used to end it — disarm, the number/switch
+        entities, a service call, or the select flipping to off and
+        back. Before this existed the setter only cleared three of the
+        eight clocks and disarm cleared seven, so a select round-trip
+        left _collapsed_since, _started_at, _charge_seeded and
+        _backoff_until stranded across it.
+
+        Clearing _started_at and _charge_seeded together here is safe
+        even mid-charge: the seeding block in _async_evaluate re-seeds
+        _started_at from a charge already running on the very next
+        tick that observes it charging, which is the same outcome
+        disarm's own docstring above already relies on.
+        """
         self._above_since = None
         self._below_since = None
+        self._start_issued_at = None
         self._collapsed_since = None
         self._started_at = None
-        self._start_issued_at = None
         self._charge_seeded = False
         self._backoff_until = 0.0
-        self._notify()
 
     @property
     def reserve_w(self) -> float:
@@ -782,14 +807,36 @@ class SolarController:
         elif self._collapsed_since is None:
             self._collapsed_since = now
 
-        if available >= state.floor_w and self._collapsed_since is None:
-            self._below_since = None
+        # I1: kept as two independent conditions rather than one
+        # if/else, deliberately. Coupling them (as a single "available
+        # is healthy and collapsed_since is None" test previously did)
+        # let one instantaneous raw dip — an oven cycling on, say —
+        # reset _above_since even while the smoothed surplus never
+        # left the healthy range: _collapsed_since flips on and off
+        # every tick the raw reading dips, and each flip took the
+        # else-branch and cleared _above_since, so the 300s start
+        # delay could never accrue on a day with ample average
+        # surplus. _above_since answers a question only the smoothed
+        # figure should decide.
+        if available >= state.floor_w:
             if self._above_since is None:
                 self._above_since = now
         else:
             self._above_since = None
+
+        # _below_since is unaffected by that split: this is exactly
+        # the negation of the old combined condition
+        # (available >= floor and collapsed_since is None), so every
+        # existing anchor case — including the one where the smoothed
+        # figure is still healthy but the raw reading has already
+        # collapsed and _track_thresholds must anchor the stop clock
+        # to that collapse, not to whenever the average catches up —
+        # keeps behaving exactly as before.
+        if available < state.floor_w or self._collapsed_since is not None:
             if self._below_since is None:
                 self._below_since = self._collapsed_since or now
+        else:
+            self._below_since = None
 
     def _check_ignored_start(self, now: float, car_connected: bool) -> None:
         """Back off if a car we started never began drawing.
@@ -853,7 +900,11 @@ class SolarController:
         )
 
     async def _send_command(
-        self, description: str, call: Callable[[], Any], retry_key: str
+        self,
+        description: str,
+        call: Callable[[], Any],
+        retry_key: str,
+        on_retry_exhausted: Callable[[], None] | None = None,
     ) -> bool | None:
         """Issue one command, handing a stuck link to the background retry.
 
@@ -879,6 +930,13 @@ class SolarController:
                 retry, so a newer one supersedes an older one, and
                 shared with whatever manual entity can act on the same
                 physical setting so the two supersede each other too.
+            on_retry_exhausted: Called, in addition to the warning log,
+                if the background retry's own chain of attempts runs
+                out without the command ever landing. Only the STOP
+                path uses this today (see the C1 fix note in
+                _carry_out): a stop that never lands must not leave
+                the minimum-run clock seeded against a charge that
+                never actually stopped.
 
         Returns:
             True if the command reached the charger. None if it was
@@ -890,6 +948,12 @@ class SolarController:
             retried.
 
         """
+
+        def _on_failure(message: str) -> None:
+            _LOGGER.warning("%s", message)
+            if on_retry_exhausted is not None:
+                on_retry_exhausted()
+
         try:
             await call()
         except ApiAuthError as err:
@@ -901,9 +965,7 @@ class SolarController:
                     key=retry_key,
                     action=call,
                     description=description,
-                    on_failure=lambda message: _LOGGER.warning(
-                        "%s", message
-                    ),
+                    on_failure=_on_failure,
                 )
                 return None
 
@@ -959,6 +1021,19 @@ class SolarController:
                 "stopping the charge",
                 lambda: client.async_stop_charge(serial),
                 charge_key,
+                # C1: a STOP only ever queued for the background retry
+                # clears _started_at below (stop_sent is not False)
+                # while the charge is still running, so _charge_seeded
+                # stays True and the minimum-run clock can never
+                # re-seed — decide() reads seconds_since_start as 0.0
+                # for ever and the car imports from the grid until
+                # someone notices. If that retry chain later exhausts
+                # without the stop landing, release the seed so the
+                # very next tick that still observes charging re-seeds
+                # _started_at and a fresh STOP can be issued.
+                on_retry_exhausted=lambda: setattr(
+                    self, "_charge_seeded", False
+                ),
             )
             if stop_sent is True:
                 self._coordinator.async_cancel_background_retry(charge_key)
@@ -1006,6 +1081,22 @@ class SolarController:
                     self._coordinator.async_cancel_background_retry(
                         current_key
                     )
+
+            # I2: _carry_out awaits the current-set above, and a user
+            # action landing during that await (the power slider, the
+            # charge switch, a service call) calls disarm() — which
+            # sets the mode to OFF but does not, and cannot, cancel
+            # this coroutine already in flight. Without re-testing the
+            # mode here, resuming after that await would send the
+            # start-charge anyway: the car starts on grid power against
+            # the user's own action, and solar is now OFF, so it will
+            # never stop it either. Re-checked here rather than once at
+            # the top of _carry_out because the mode is guaranteed
+            # ACTIVE at entry (the only two callers, both in
+            # _async_evaluate, already filter OFF and SIMULATE) and can
+            # only have changed by drifting across an await since.
+            if self._mode is not SolarMode.ACTIVE:
+                return
 
             # A limit only queued for the background retry has not
             # reached the charger yet. Starting anyway would run the

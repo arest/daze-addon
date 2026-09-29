@@ -172,6 +172,11 @@ class FakeCoordinator:
         self.refresh_delays: list[int] = []
         self.background_retries: list[tuple[str, str]] = []
         self.cancelled_retries: list[str] = []
+        # Keyed separately from background_retries so existing tests
+        # unpacking that list's 2-tuples are undisturbed. Lets a test
+        # simulate the retry chain exhausting by invoking the callback
+        # itself, rather than actually waiting out BACKGROUND_RETRY_DELAYS.
+        self.background_retry_on_failure: dict[str, Any] = {}
 
     def async_schedule_refresh_in(self, delay: int) -> None:
         self.refresh_delays.append(delay)
@@ -185,6 +190,7 @@ class FakeCoordinator:
     ) -> None:
         """Record a hand-off instead of actually retrying anything."""
         self.background_retries.append((key, description))
+        self.background_retry_on_failure[key] = on_failure
 
     def async_cancel_background_retry(self, key: str) -> None:
         """Record a cancellation instead of actually dropping one."""
@@ -2231,6 +2237,257 @@ def test_disarm_clears_the_seeding_flag_so_a_rearm_can_reseed() -> None:
     elapsed = time.monotonic() - controller._started_at
     assert elapsed >= solar.MIN_RUN_SECONDS, (
         "the re-armed charge was not reseeded, so it can never be stopped"
+    )
+
+
+# ------------------------------------------------------------------
+# Final whole-branch review, 2026-09-29: findings that live between
+# tasks, and so could not be seen by any single task's own tests.
+# ------------------------------------------------------------------
+
+
+def test_c1_a_stop_whose_retry_chain_exhausts_reseeds_the_min_run_clock() -> (
+    None
+):
+    """C1: a STOP only queued for the background retry clears
+    _started_at while the charge is still running, so _charge_seeded
+    stays True and the minimum-run clock can never re-seed —
+    decide() reads seconds_since_start as 0.0 for ever and the car
+    imports from the grid until someone notices. If the retry chain
+    then exhausts without the stop ever landing, _charge_seeded must
+    release so the next tick that still observes charging re-seeds
+    _started_at and a fresh STOP can be issued.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [50_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+        hass.states.set(
+            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_tick())  # starts the below-floor timer
+
+        clock[0] += solar.STOP_DELAY_SECONDS + 1
+
+        async def _rpc_failure(serial: str, attempts: int = 8) -> dict:
+            raise api_module.ApiCommandRejectedError(
+                "unreachable", code=api_module.COMMAND_ERROR_CODE_RPC_FAILURE
+            )
+
+        coordinator.api_client.async_stop_charge = _rpc_failure
+        asyncio.run(controller.async_tick())  # issues STOP, queued for retry
+
+        assert controller._started_at is None, (
+            "the stop must have landed for this sequence to test anything"
+        )
+        assert controller._charge_seeded is True, (
+            "still charging, so the seed must still be held while the "
+            "retry is in flight"
+        )
+
+        # The retry chain exhausts without the stop ever landing.
+        charge_key = f"{coordinator.serial_number}:charge"
+        on_failure = coordinator.background_retry_on_failure.get(charge_key)
+        assert on_failure is not None, "the STOP send must register a retry"
+        on_failure("stopping the charge could not be delivered")
+
+        assert controller._charge_seeded is False, (
+            "the seed must release once the retry gives up, or the "
+            "minimum-run clock can never re-seed and the charge can "
+            "never be stopped"
+        )
+
+        # The next tick, still charging and still below the floor,
+        # must reseed _started_at and issue a fresh STOP — and this
+        # time the link is healthy, so it must actually land.
+        async def _stop_ok(serial: str, attempts: int = 8) -> dict:
+            coordinator.api_client.calls.append(("stop", serial))
+            return {}
+
+        coordinator.api_client.async_stop_charge = _stop_ok
+        clock[0] += solar.TICK_SECONDS
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    stops = [call for call in coordinator.api_client.calls if call[0] == "stop"]
+    assert stops, (
+        "the charge was never reseeded after the retry gave up, so no "
+        "STOP was ever issued again: decide() would read "
+        "seconds_since_start as 0.0 for ever"
+    )
+
+
+def test_c2_a_select_round_trip_does_not_strand_the_four_episode_clocks() -> (
+    None
+):
+    """C2: the select's async_select_option sets the controller's mode
+    directly (select.py:366), the same setter this test drives. Before
+    this fix the setter cleared only three of the eight episode clocks
+    — _above_since, _below_since, _start_issued_at — while disarm()
+    cleared seven. A user turning the select off and back to active
+    left _collapsed_since, _started_at, _charge_seeded and
+    _backoff_until frozen across the round trip: _collapsed_since
+    stale for hours re-anchors the stop clock and can issue an
+    immediate STOP on arming; _started_at stuck at None with
+    _charge_seeded still True means seconds_since_start reads 0.0 for
+    ever and the charge can never be stopped.
+    """
+    controller, _, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    controller._collapsed_since = 100.0
+    controller._started_at = 100.0
+    controller._charge_seeded = True
+    controller._backoff_until = 1e9
+
+    # The select round trip: off, then back to active, exactly what
+    # select.py's async_select_option does across two user actions.
+    controller.mode = controller_module.SolarMode.OFF
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    assert controller._collapsed_since is None, (
+        "a stale collapse anchor survived the round trip"
+    )
+    assert controller._started_at is None, (
+        "a stale start mark survived the round trip"
+    )
+    assert controller._charge_seeded is False, (
+        "the seeding flag survived the round trip, so _started_at above "
+        "could never be reseeded"
+    )
+    assert controller._backoff_until == 0.0, (
+        "a stale back-off survived the round trip"
+    )
+
+
+def test_i1_an_intermittent_raw_dip_does_not_veto_the_smoothed_start_clock() -> (
+    None
+):
+    """I1: an oven cycling on and off flips the raw reading between
+    3500 W and 1200 W against a 1518 W floor, while the smoothed
+    surplus stays comfortably above it throughout. Each raw dip below
+    the floor used to reset _above_since even though the smoothed
+    figure — the one decide()'s start path actually reads — never left
+    the healthy range, so the 300s start delay could never accrue and
+    the charge would never start, all afternoon, with ample surplus
+    exported the whole time.
+    """
+    controller, _, hass = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [70_000_000.0]
+    start_ts = clock[0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        # Alternating raw readings: comfortably above the 1518 W floor,
+        # then below it, repeating — the smoothed average of these
+        # never drops below the floor (2350 W, 2733 W, 1967 W over the
+        # four ticks below), only the raw reading does.
+        for export in (3500, 1200, 3500, 1200):
+            hass.states.set(
+                "sensor.grid_import", "0", {"unit_of_measurement": "W"}
+            )
+            hass.states.set(
+                "sensor.grid_export", str(export), {"unit_of_measurement": "W"}
+            )
+            asyncio.run(controller.async_tick())
+            clock[0] += solar.TICK_SECONDS
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert controller._above_since == start_ts, (
+        "a raw dip reset the smoothed start clock even though the "
+        f"smoothed surplus never left the healthy range: "
+        f"_above_since={controller._above_since!r}, expected {start_ts!r}"
+    )
+
+
+def test_i2_a_disarm_mid_start_does_not_still_issue_the_start_charge() -> None:
+    """I2: _carry_out awaits the current-set call before sending the
+    start-charge. A user action landing during that await — dragging
+    the power slider, say — calls disarm(), which sets the mode to
+    OFF. Without re-testing the mode before the start-charge send, the
+    coroutine resumes and sends it anyway: the car starts on grid
+    power against the user's own action, and because solar is now
+    OFF, it will never stop it either.
+    """
+    controller, coordinator, _ = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [80_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        asyncio.run(controller.async_tick())  # waiting to confirm
+        clock[0] += solar.START_DELAY_SECONDS + 1
+
+        async def _set_current_then_disarm(
+            serial: str, current_ma: int, attempts: int = 8
+        ) -> dict:
+            # Simulates the race: a manual write lands and disarms
+            # solar control while this command's own await is in
+            # flight, before the coroutine below resumes.
+            controller.disarm("the charging limit was set manually")
+            return {}
+
+        coordinator.api_client.async_set_max_charging_current = (
+            _set_current_then_disarm
+        )
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert controller.mode is controller_module.SolarMode.OFF, (
+        "the disarm during the await must have taken effect for this "
+        "sequence to test anything"
+    )
+    assert not any(
+        call[0] == "start" for call in coordinator.api_client.calls
+    ), "solar started the charge after being disarmed mid-command"
+
+
+def test_i3_the_backoff_does_not_suppress_a_stop_on_a_car_that_is_drawing() -> (
+    None
+):
+    """I3: solar.py's ignored-start back-off exists to stop the
+    controller re-starting an idle charger the car ignored, not to
+    stop it stopping. Gated on backoff_remaining_s alone, a car that
+    wakes late and starts drawing on its own past the back-off's own
+    surplus collapse would import from the grid, suppressed, for the
+    rest of the hour.
+    """
+    decision = solar.decide(
+        solar.SolarState(
+            surplus_w=0,
+            reserve_w=0,
+            floor_w=1518,
+            ceiling_w=7360,
+            charging=True,
+            current_limit_w=3000,
+            command_pending=False,
+            charger_reachable=True,
+            eco_mode_on=False,
+            schedule_set=False,
+            car_connected=True,
+            seconds_above_threshold=0,
+            seconds_below_threshold=solar.STOP_DELAY_SECONDS + 1,
+            seconds_since_start=solar.MIN_RUN_SECONDS + 1,
+            seconds_since_last_command=3600,
+            commands_this_hour=0,
+            backoff_remaining_s=1800,
+        )
+    )
+    assert decision.action is solar.SolarAction.STOP, (
+        f"expected STOP, got {decision.action!r}: {decision.reason!r}"
     )
 
 

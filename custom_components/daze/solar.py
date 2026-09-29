@@ -144,7 +144,13 @@ def decide(state: SolarState) -> SolarDecision:
     if state.commands_this_hour >= MAX_COMMANDS_PER_HOUR:
         return _nothing("rate limit reached for this hour")
 
-    if state.backoff_remaining_s > 0:
+    # I3: this guard exists solely to stop the controller re-starting
+    # an idle charger the car ignored — not to stop it stopping. Gated
+    # on "not charging" so a car that wakes late and starts drawing on
+    # its own is still subject to the ordinary stop path below rather
+    # than importing from the grid, suppressed, for the rest of the
+    # hour-long back-off.
+    if not state.charging and state.backoff_remaining_s > 0:
         return _nothing(
             f"backing off for {int(state.backoff_remaining_s)}s after a "
             "start the car ignored"
