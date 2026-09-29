@@ -16,7 +16,9 @@
   documentation task, and nowhere else. No other task touches it. The
   maintainer chose this number; do not invent a different one.
 - **Deploying is `git push`.** There is no separate copy step. Push `main` and force-push the `v0.1.6` tag together, since the tag tracks `main`.
-- **Every commit message ends with:** `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`
+- **Every commit message ends with the attribution line your own session
+  specifies.** Do not copy a model name from this plan: a subagent running
+  a different model attributes to that model, which is accurate.
 - **Lint gate:** `ruff check custom_components/daze/` must pass. This is what CI runs.
 - **Test gate:** `python3 tests/run_all.py` must report 0 failures.
 - **No Home Assistant in the test environment.** Pure modules are imported directly; Home-Assistant-coupled modules are tested through the stub harness in `tests/test_entities.py`.
