@@ -12,7 +12,9 @@
 
 ## Global Constraints
 
-- **Do not bump `manifest.json` version.** The maintainer sets version numbers explicitly; leave `"version": "0.1.6"` untouched.
+- **Version:** set `manifest.json` to `"version": "0.2.0"` in the final
+  documentation task, and nowhere else. No other task touches it. The
+  maintainer chose this number; do not invent a different one.
 - **Deploying is `git push`.** There is no separate copy step. Push `main` and force-push the `v0.1.6` tag together, since the tag tracks `main`.
 - **Every commit message ends with:** `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`
 - **Lint gate:** `ruff check custom_components/daze/` must pass. This is what CI runs.
@@ -759,7 +761,7 @@ class SurplusSmoother:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python3 tests/test_solar.py`
-Expected: PASS, `29 passed, 0 failed`
+Expected: PASS, `28 passed, 0 failed`
 
 - [ ] **Step 5: Lint**
 
@@ -1175,12 +1177,36 @@ def test_a_pending_command_is_not_piled_on() -> None:
     assert coordinator.api_client.calls == []
 
 
-def test_the_reserve_is_honoured() -> None:
-    controller, _, _ = build()
-    controller.reserve_w = 2000
-    asyncio.run(controller.async_tick())
-    assert controller.surplus_w == 8000
-    assert controller.last_decision is None or True
+def test_the_reserve_lowers_the_target() -> None:
+    """The house gets its share before the car does.
+
+    Compared against an identical controller with no reserve, rather
+    than asserting an exact figure: the target is also clamped to the
+    charger's ceiling, so the difference is not simply the reserve.
+    """
+    plain, _, _ = build()
+    plain.mode = controller_module.SolarMode.ACTIVE
+
+    withheld, _, _ = build()
+    withheld.mode = controller_module.SolarMode.ACTIVE
+    withheld.reserve_w = 2000
+
+    for _ in range(2):
+        asyncio.run(plain.async_tick())
+        asyncio.run(withheld.async_tick())
+
+    assert plain.last_decision is not None
+    assert withheld.last_decision is not None
+
+    # The reserve must not change what surplus is, only what the car
+    # is allowed to take of it.
+    assert plain.surplus_w == withheld.surplus_w == 8000
+
+    plain_target = plain.last_decision.target_watts
+    withheld_target = withheld.last_decision.target_watts
+    assert plain_target is not None
+    assert withheld_target is not None
+    assert withheld_target < plain_target
 
 
 def test_listeners_are_told_after_a_tick() -> None:
@@ -2600,7 +2626,15 @@ For a version you build and tune yourself, see
 [docs/solar-surplus-charging.md](docs/solar-surplus-charging.md).
 ```
 
-- [ ] **Step 3: Cross-reference from the YAML guide**
+- [ ] **Step 3: Bump the version**
+
+Modify `custom_components/daze/manifest.json`, setting `"version"` to
+`"0.2.0"`. This is the only task that touches it.
+
+Run: `python3 -c "import json; print(json.load(open('custom_components/daze/manifest.json'))['version'])"`
+Expected: `0.2.0`
+
+- [ ] **Step 4: Cross-reference from the YAML guide**
 
 At the top of `docs/solar-surplus-charging.md`, after the first paragraph, add:
 
@@ -2611,7 +2645,7 @@ At the top of `docs/solar-surplus-charging.md`, after the first paragraph, add:
 > needing logic of your own.
 ```
 
-- [ ] **Step 4: Verify and commit**
+- [ ] **Step 5: Verify and commit**
 
 Run: `python3 tests/run_all.py`
 Expected: 0 failures.
@@ -2626,7 +2660,7 @@ and stops the car should be watched for a day before it is trusted.
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 5: Push, and move the tag**
+- [ ] **Step 6: Push, and move the tag**
 
 ```bash
 set -a; . ./.env; set +a

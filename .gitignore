@@ -45,3 +45,6 @@ credentials.*
 /log
 *.out
 probe-*.txt
+
+# Subagent-driven development scratch
+/.superpowers/
