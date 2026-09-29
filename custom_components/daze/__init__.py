@@ -25,6 +25,7 @@ from .const import (
     SERVICE_STOP_CHARGE,
 )
 from .coordinator import DazeDataUpdateCoordinator, async_setup_coordinator
+from .payload import charger_offline_reason
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -92,20 +93,25 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a Daze Wallbox config entry."""
     _LOGGER.debug("Unloading Daze Wallbox config entry %s", entry.entry_id)
 
-    # Stop anything the coordinator has scheduled before tearing the
-    # entry down. An options change reloads the entry, so without this
-    # the old coordinator keeps firing against a closed client.
-    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-    if entry_data is not None:
-        coordinator: DazeDataUpdateCoordinator = entry_data["coordinator"]
-        coordinator.async_shutdown_timers()
-
     # Unload entity platforms
     unload_ok = await hass.config_entries.async_unload_platforms(
         entry, PLATFORMS
     )
 
     if unload_ok:
+        # Stop anything the coordinator has scheduled. An options
+        # change reloads the entry, so without this the old
+        # coordinator keeps firing against a closed client.
+        #
+        # Only once the unload has actually succeeded: a refused
+        # unload leaves the entry running with this same coordinator,
+        # and tearing down its timers and listeners would leave it
+        # alive but inert.
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+        if entry_data is not None:
+            coordinator: DazeDataUpdateCoordinator = entry_data["coordinator"]
+            coordinator.async_shutdown_timers()
+
         # Clean up stored data
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
@@ -139,8 +145,24 @@ def _async_register_services(
     api_client = coordinator.api_client
     serial_number = coordinator.serial_number
 
+    def _refuse_if_offline() -> None:
+        """Stop a service call that cannot reach the charger.
+
+        The entities check this before sending. Without the same check
+        here an automation gets the long retry and the misleading
+        service-outage error the guard was written to replace.
+        """
+        reason = charger_offline_reason(coordinator.data)
+        if reason is not None:
+            raise HomeAssistantError(
+                f"The command was not sent because {reason}. "
+                "Check that the wallbox has power."
+            )
+
     async def _handle_start_charge(call: ServiceCall) -> None:
         """Start charging."""
+        _refuse_if_offline()
+
         try:
             await api_client.async_start_charge(serial_number)
             await coordinator.async_request_refresh()
@@ -157,6 +179,8 @@ def _async_register_services(
 
     async def _handle_stop_charge(call: ServiceCall) -> None:
         """Stop charging."""
+        _refuse_if_offline()
+
         try:
             await api_client.async_stop_charge(serial_number)
             await coordinator.async_request_refresh()
@@ -174,6 +198,8 @@ def _async_register_services(
     async def _handle_set_charging_current(call: ServiceCall) -> None:
         """Set the maximum charging current."""
         current: int = call.data["current"]
+        _refuse_if_offline()
+
         try:
             await api_client.async_set_max_charging_current(
                 serial_number, current

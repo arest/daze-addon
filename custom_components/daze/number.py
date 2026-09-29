@@ -399,10 +399,15 @@ class DazeWallboxPowerEntity(
         milliamps = watts_to_milliamps(value, self.coordinator.data)
         watts = milliamps_to_watts(milliamps, self.coordinator.data)
 
-        current = self.coordinator.data or {}
-        if current.get("maxExternalChargingCurrentInMilliAmps") == milliamps:
+        # Compared against what is being displayed, which includes a
+        # pending change. Comparing against the charger's reading
+        # instead meant that correcting a value back to where it
+        # started matched the stale reading and sent nothing, leaving
+        # the charger on the intermediate value.
+        shown = self.coordinator.limit_state.resolve(self._reported_current)
+        if shown is not None and shown == milliamps:
             _LOGGER.debug(
-                "Power set to %d W, already at %d mA, skipping",
+                "Power set to %d W, already requesting %d mA, skipping",
                 watts,
                 milliamps,
             )

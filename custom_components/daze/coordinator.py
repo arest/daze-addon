@@ -200,6 +200,17 @@ class DazeDataUpdateCoordinator(
             try:
                 await action()
             except Exception as err:  # noqa: BLE001 - reported below
+                if state["cancelled"]:
+                    # Cancelled while this attempt was in flight, which
+                    # is a window of tens of seconds. Rescheduling here
+                    # would re-register the chain and undo both the
+                    # supersede on a newer command and the shutdown on
+                    # unload.
+                    _LOGGER.debug(
+                        "Dropping superseded retry for %s", description
+                    )
+                    return
+
                 state["index"] = index + 1
 
                 if state["index"] < len(attempts):
@@ -231,10 +242,21 @@ class DazeDataUpdateCoordinator(
                     )
                 return
 
+            if state["cancelled"]:
+                _LOGGER.debug(
+                    "Superseded retry for %s succeeded; not refreshing",
+                    description,
+                )
+                return
+
             self._pending_retries.pop(key, None)
             _LOGGER.info(
                 "%s succeeded on background attempt %d", description, index + 1
             )
+            # The settings a command changes live only in the EVSE
+            # record, which is cached, so confirming the change needs
+            # a fresh copy.
+            self._next_evse_fetch = 0.0
             await self.async_request_refresh()
 
         def _schedule(delay: int) -> None:

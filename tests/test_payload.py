@@ -697,8 +697,14 @@ def test_schedule_object_does_not_reach_the_timestamp_sensor() -> None:
         {"nextScheduleInfo": {"startTime": "2026-09-28T02:00:00Z"}}, None
     )
     value = catalog.get_next_scheduled_charge(with_schedule)
-    assert value == "2026-09-28T02:00:00Z"
-    assert not isinstance(value, dict)
+
+    # A timestamp sensor needs a datetime. Returning the raw string
+    # raises the same "Invalid datetime" the dict did.
+    from datetime import datetime
+
+    assert isinstance(value, datetime)
+    assert value.tzinfo is not None
+    assert value.isoformat().startswith("2026-09-28T02:00:00")
 
 
 def test_unknown_schedule_shape_yields_nothing() -> None:

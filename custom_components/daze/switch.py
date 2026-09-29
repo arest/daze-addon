@@ -278,12 +278,23 @@ class DazeWallboxSwitchEntity(
                 self._serial_number, attempts=INLINE_COMMAND_ATTEMPTS
             ),
             description=f"{verb} the charge",
-            on_failure=self._notify_error,
+            on_failure=self._clear_requested,
         )
 
         # Show the intent while the retries run.
         self._set_optimistic(turn_on, awaiting_retry=True)
         return True
+
+    def _clear_requested(self, message: str) -> None:
+        """Drop the pending state and explain why.
+
+        Without this the toggle kept asserting the commanded state for
+        another minute after the user had been told it failed, and
+        nothing redrew it when the hold finally expired.
+        """
+        self._optimistic.clear()
+        self.async_write_ha_state()
+        self._notify_error(message)
 
     def _notify_error(self, message: str) -> None:
         """Show a persistent notification in the HA frontend."""

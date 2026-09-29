@@ -211,7 +211,7 @@ def _load_package() -> types.ModuleType:
     sys.modules["daze_entities_under_test.api"] = api_module
     spec.loader.exec_module(api_module)
 
-    for name in ("coordinator", "number", "select"):
+    for name in ("coordinator", "number", "select", "switch"):
         spec = importlib.util.spec_from_file_location(
             f"daze_entities_under_test.{name}", PACKAGE_DIR / f"{name}.py"
         )
@@ -307,6 +307,24 @@ class FakeApi:
     ) -> dict:
         """Record and optionally fail."""
         self.calls.append(("eco", eco_mode_enabled))
+        if self.error is not None:
+            raise self.error
+        return {}
+
+    async def async_start_charge(
+        self, serial: str, attempts: int = 8
+    ) -> dict:
+        """Record and optionally fail."""
+        self.calls.append(("start", serial))
+        if self.error is not None:
+            raise self.error
+        return {}
+
+    async def async_stop_charge(
+        self, serial: str, attempts: int = 8
+    ) -> dict:
+        """Record and optionally fail."""
+        self.calls.append(("stop", serial))
         if self.error is not None:
             raise self.error
         return {}
@@ -922,6 +940,81 @@ def test_a_command_is_sent_to_a_reporting_charger() -> None:
 
     assert client.calls == [("current", 16000)]
     assert not notifications
+
+
+
+def test_correcting_a_power_value_back_is_still_sent() -> None:
+    """Dragging back to the starting value must not be swallowed.
+
+    The power entity compared against the charger's reading rather
+    than what it was displaying. After a pending change, correcting
+    the slider back matched the stale reading, so nothing was sent and
+    the charger stayed on the intermediate value the user had already
+    moved away from.
+    """
+    coordinator = FakeCoordinator(dict(POWER_DATA))
+    coordinator.data["maxExternalChargingCurrentInMilliAmps"] = 16900
+    client = FakeApi()
+
+    power = number_module.DazeWallboxPowerEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+    asyncio.run(power.async_added_to_hass())
+
+    # Drop it, then immediately put it back.
+    asyncio.run(power.async_set_native_value(1600))
+    first = list(client.calls)
+    asyncio.run(power.async_set_native_value(3988))
+
+    assert len(client.calls) == len(first) + 1, (
+        "the corrective change was dropped"
+    )
+    assert client.calls[-1][1] == 16900
+
+
+def test_setting_the_displayed_value_again_sends_nothing() -> None:
+    """The guard must still suppress a genuine no-op."""
+    coordinator = FakeCoordinator(dict(POWER_DATA))
+    coordinator.data["maxExternalChargingCurrentInMilliAmps"] = 16900
+    client = FakeApi()
+
+    power = number_module.DazeWallboxPowerEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+    asyncio.run(power.async_added_to_hass())
+
+    asyncio.run(power.async_set_native_value(3988))
+
+    assert client.calls == []
+
+
+def test_switch_clears_its_pending_state_when_retries_fail() -> None:
+    """Otherwise the toggle asserts a state the user was told failed.
+
+    Every other control cleared on failure; the switch only notified,
+    and the hold had just been extended from 20 to 525 seconds.
+    """
+    coordinator = FakeCoordinator(dict(BASE_DATA))
+    client = FakeApi(error=rpc_failure())
+
+    switch_module = sys.modules["daze_entities_under_test.switch"]
+    entity = switch_module.DazeWallboxSwitchEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+
+    notifications.clear()
+    asyncio.run(entity.async_turn_on())
+
+    assert coordinator.background, "expected a queued retry"
+    assert entity.is_on is True
+
+    coordinator.background[0]["on_failure"]("could not be delivered")
+
+    assert entity.is_on is not True, "the toggle still asserts the command"
+    assert len(notifications) == 1
 
 
 def _main() -> int:

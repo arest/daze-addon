@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 type ValueFn = Callable[[dict[str, Any]], Any | None]
@@ -78,6 +79,35 @@ _SCHEDULE_TIME_FIELDS = (
 )
 
 
+def _as_datetime(value: Any) -> datetime | None:
+    """Coerce an API value into a timezone-aware datetime.
+
+    A timestamp sensor requires a datetime. Returning the raw string or
+    epoch the API provides raises "Invalid datetime" on every state
+    write, which is the same failure that returning the nested object
+    caused.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+    if isinstance(value, (int, float)):
+        # Milliseconds if it is far too large to be seconds.
+        seconds = value / 1000 if value > 1e11 else value
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    return None
+
+
 def get_next_scheduled_charge(data: dict[str, Any]) -> Any | None:
     """Return the next scheduled charge time, if one is set.
 
@@ -95,13 +125,14 @@ def get_next_scheduled_charge(data: dict[str, Any]) -> Any | None:
 
         if isinstance(value, dict):
             for field in _SCHEDULE_TIME_FIELDS:
-                nested = value.get(field)
-                if isinstance(nested, (str, int, float)):
-                    return nested
+                parsed = _as_datetime(value.get(field))
+                if parsed is not None:
+                    return parsed
             continue
 
-        if isinstance(value, (str, int, float)):
-            return value
+        parsed = _as_datetime(value)
+        if parsed is not None:
+            return parsed
 
     return None
 

@@ -516,9 +516,18 @@ def last_reported_at(data: dict[str, Any] | None) -> datetime | None:
         return None
 
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+    # A timestamp without an offset would raise when compared against
+    # an aware clock, and this runs before every command, so the
+    # exception would block the controls entirely. Assume UTC, which
+    # is what the API sends when it does include an offset.
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+
+    return parsed
 
 
 def charger_offline_reason(data: dict[str, Any] | None) -> str | None:
