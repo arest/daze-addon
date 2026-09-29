@@ -48,3 +48,6 @@ probe-*.txt
 
 # Subagent-driven development scratch
 /.superpowers/
+
+# Working rules, kept local by operator decision 2026-09-29
+/rules.md
