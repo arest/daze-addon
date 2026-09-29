@@ -2080,6 +2080,128 @@ def test_simulate_previews_a_stop_on_an_already_running_charge() -> None:
     assert coordinator.api_client.calls == [], "simulate must send nothing"
 
 
+def test_the_seeded_flag_resets_so_a_later_charge_is_reseeded() -> None:
+    """The reset half of the flag, not just the initial set.
+
+    test_a_charge_that_starts_later_is_seeded_in_its_turn starts from a
+    charger that was never charging, so _charge_seeded is already False
+    and the reset never has to fire — it exercises the initial set, not
+    the release. This drives the sequence that actually needs it:
+    charging (seeded), solar stops it for real, one tick observes the
+    charger idle, then a new charge begins.
+
+    Without the reset, _charge_seeded stays True from the first
+    episode, the second charge is never reseeded, _started_at stays at
+    the None _carry_out's STOP left behind, and seconds_since_start
+    reads zero for ever — the charge can never be stopped, importing
+    from the grid indefinitely once surplus collapses again.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [30_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        asyncio.run(controller.async_tick())  # seeds the first episode
+        assert controller._charge_seeded is True
+        assert controller._started_at is not None
+
+        # Collapse surplus and let the stop actually land.
+        hass.states.set(
+            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_tick())  # starts the below-floor timer
+        clock[0] += solar.STOP_DELAY_SECONDS + 1
+        asyncio.run(controller.async_tick())  # issues STOP
+        assert any(
+            call[0] == "stop" for call in coordinator.api_client.calls
+        )
+        assert controller._started_at is None, (
+            "the stop must have landed for this sequence to test anything"
+        )
+
+        # Surplus recovers, so the below-floor anchor from the first
+        # episode does not immediately stop the second one and mask
+        # what this test is actually checking.
+        hass.states.set(
+            "sensor.grid_import", "0", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "5000", {"unit_of_measurement": "W"}
+        )
+
+        # One tick observes the charger now idle.
+        coordinator.data = dict(NOT_CHARGING_DATA)
+        clock[0] += solar.TICK_SECONDS
+        asyncio.run(controller.async_tick())
+        assert controller._charge_seeded is False, (
+            "the flag must release once the charge is observed to end"
+        )
+
+        # A new charge begins — the user plugging back in, say.
+        coordinator.data = dict(CHARGING_DATA)
+        clock[0] += solar.TICK_SECONDS
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert controller._started_at is not None
+    elapsed = clock[0] - controller._started_at
+    assert elapsed >= solar.MIN_RUN_SECONDS, (
+        "the later charge was not reseeded, so it can never be stopped: "
+        f"seconds_since_start={elapsed:.0f}"
+    )
+
+
+def test_the_backdate_guard_protects_a_solar_issued_start() -> None:
+    """The inner `if self._started_at is None` guard, named in the
+    brief, protects a start this controller just issued from being
+    backdated by the seeding on the very next tick.
+
+    Without it, the tick after a solar-issued START — now that the
+    charger reports charging — would see _charge_seeded still False,
+    reseed _started_at to ten minutes in the past even though the real
+    start was seconds ago, satisfy MIN_RUN_SECONDS immediately, and let
+    the charge solar itself just started be stopped on the next dip —
+    the short-cycling this constant exists to prevent, on its own
+    charge.
+    """
+    controller, coordinator, _ = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [40_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        asyncio.run(controller.async_tick())  # waits for the start delay
+        clock[0] += solar.START_DELAY_SECONDS + 1
+        asyncio.run(controller.async_tick())  # issues START
+        assert any(
+            call[0] == "start" for call in coordinator.api_client.calls
+        )
+        started_at = controller._started_at
+        assert started_at == clock[0], (
+            "the start must have landed for this sequence to test anything"
+        )
+
+        # The charger now reports charging, matching the start that just
+        # landed.
+        coordinator.data = dict(CHARGING_DATA)
+        clock[0] += solar.TICK_SECONDS
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert controller._started_at == started_at, (
+        "the solar-issued start's own mark was backdated by the seeding: "
+        f"was {started_at}, now {controller._started_at}"
+    )
+
+
 def test_disarm_clears_the_seeding_flag_so_a_rearm_can_reseed() -> None:
     """The mirror bug, reached through disarm/re-arm instead of a
     reboot.

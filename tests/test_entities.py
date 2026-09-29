@@ -1427,6 +1427,66 @@ def test_the_solar_select_defaults_to_simulate_with_no_stored_state() -> None:
     assert controller.mode.value == "simulate"
 
 
+def test_restoring_an_unrecognised_stored_state_does_not_crash_the_entity() -> (
+    None
+):
+    """A stored state is not guaranteed to be one of the three modes.
+
+    Task 9 made `available` false in four more situations than before,
+    so a stored state of "unavailable" is a likely one for exactly the
+    users who most need the control back — not exotic input. Without
+    the membership check, `SolarMode("unavailable")` raises ValueError
+    inside async_added_to_hass, the entity fails to add, and solar
+    control disappears from the dashboard entirely.
+    """
+    entity, controller = _solar_select(configured=True)
+
+    class LastState:
+        state = "unavailable"
+
+    async def _last_state() -> Any:
+        return LastState()
+
+    entity.async_get_last_state = _last_state
+
+    asyncio.run(entity.async_added_to_hass())  # must not raise
+
+    assert controller.mode is None, (
+        "an unrecognised stored state must be left alone, not guessed at"
+    )
+
+
+def test_restoring_bypasses_the_selects_own_refusal() -> None:
+    """The restore writes to the controller directly rather than
+    through async_select_option, and this is the property that makes
+    Task 9's stand-down test cover the restore path at all — it
+    deserves its own assertion, not just an inference from that test.
+
+    Routed through async_select_option instead, a setup that is
+    unsupported at startup (the charger has not polled yet, say) would
+    have the handler raise HomeAssistantError from inside
+    async_added_to_hass, failing the entity to add and losing the
+    stored mode to a race with the first refresh.
+    """
+    entity, controller = _solar_select(configured=False)
+    assert entity.available is False, "the fixture must start refused"
+
+    class LastState:
+        state = "active"
+
+    async def _last_state() -> Any:
+        return LastState()
+
+    entity.async_get_last_state = _last_state
+
+    asyncio.run(entity.async_added_to_hass())  # must not raise
+
+    assert controller.mode is not None
+    assert controller.mode.value == "active", (
+        "the restore must bypass the refusal async_select_option enforces"
+    )
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [
