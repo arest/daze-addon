@@ -40,7 +40,19 @@ class StubStates:
         value: str,
         attributes: dict[str, Any] | None = None,
     ) -> None:
-        """Set a state."""
+        """Set a state.
+
+        Carries the previous attributes forward when none are given,
+        matching real Home Assistant: Entity.__async_calculate_state
+        sets unit_of_measurement outside the availability branch, so
+        an entity going unavailable does not drop its own unit. A stub
+        that dropped it on every call let a test believe it was
+        checking an unparseable value when it was actually exercising
+        the unit guard instead.
+        """
+        if attributes is None:
+            previous = self._states.get(entity_id)
+            attributes = dict(previous.attributes) if previous else {}
         self._states[entity_id] = StubState(value, attributes)
 
     def get(self, entity_id: str) -> StubState | None:
@@ -286,7 +298,9 @@ def test_a_missing_sensor_stops_nothing() -> None:
     """
     controller, coordinator, hass = build()
     controller.mode = controller_module.SolarMode.ACTIVE
-    hass.states.set("sensor.grid_export", "unavailable")
+    hass.states.set(
+        "sensor.grid_export", "unavailable", {"unit_of_measurement": "W"}
+    )
 
     asyncio.run(controller.async_tick())
 
@@ -520,19 +534,25 @@ def test_no_coordinator_data_reads_as_not_reachable() -> None:
 
     charger_offline_reason itself returns None for an empty payload
     (no known reason to think it is offline), which without this
-    special case would make an unpolled charger look reachable by luck
-    rather than by design — safe only because a different guard, "no
-    car is connected", also happens to catch it.
+    special case would make an unpolled charger look reachable by
+    luck rather than by design.
+
+    Exercises _build_state directly rather than through a full tick:
+    with an entirely empty payload, _car_draw_w's own guard (an
+    unknown charging status is not evidence of zero draw) now makes
+    async_tick exit even earlier, at the car-draw check, so decide()
+    is never reached from a live tick for this exact case any more.
+    The charger_reachable guard this test protects is still correct
+    and still reachable if that earlier guard is ever relaxed, so it
+    is checked at its own layer instead of one that can no longer
+    reach it.
     """
     controller, coordinator, _ = build()
-    controller.mode = controller_module.SolarMode.ACTIVE
     coordinator.data = {}
 
-    asyncio.run(controller.async_tick())
+    state = controller._build_state(5000.0, controller_module.time.monotonic())
 
-    assert coordinator.api_client.calls == []
-    assert controller.last_decision is not None
-    assert "not reachable" in controller.last_decision.reason
+    assert state.charger_reachable is False
 
 
 def test_a_failed_command_is_handed_to_the_background_retry() -> None:
@@ -572,6 +592,164 @@ def test_a_failed_command_still_counts_against_the_hourly_backstop() -> None:
     asyncio.run(controller.async_tick())
 
     assert len(controller._command_times) == 1
+
+
+def test_a_queued_current_does_not_start_the_car_at_the_old_limit() -> None:
+    """A current-set only queued for the background retry has not
+    reached the charger yet. Starting anyway would run the car at
+    whatever limit it already had — importing from the grid, the one
+    outcome pure-solar mode exists to prevent — so "queued" must not
+    be read as "sent".
+    """
+    controller, coordinator, _ = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [4_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        asyncio.run(controller.async_tick())  # waiting to confirm
+        assert coordinator.api_client.calls == []
+
+        clock[0] += solar.START_DELAY_SECONDS + 1
+
+        async def _rpc_failure(
+            serial: str, current_ma: int, attempts: int = 8
+        ) -> dict:
+            raise api_module.ApiCommandRejectedError(
+                "unreachable", code=api_module.COMMAND_ERROR_CODE_RPC_FAILURE
+            )
+
+        coordinator.api_client.async_set_max_charging_current = _rpc_failure
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert coordinator.background_retries != []
+    assert not any(call[0] == "start" for call in coordinator.api_client.calls)
+
+
+def test_solar_current_retries_share_the_manual_entities_key() -> None:
+    """number.py cancels a background retry by f"{serial}:current"
+    after a successful manual set (see number.py:234, 252). Solar's
+    own current-setting retries must be filed under that same key, or
+    a manual override does not supersede a queued solar command — it
+    can land minutes later and silently undo the override.
+    """
+    controller, coordinator, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    async def _rpc_failure(
+        serial: str, current_ma: int, attempts: int = 8
+    ) -> dict:
+        raise api_module.ApiCommandRejectedError(
+            "unreachable", code=api_module.COMMAND_ERROR_CODE_RPC_FAILURE
+        )
+
+    coordinator.api_client.async_set_max_charging_current = _rpc_failure
+
+    asyncio.run(controller.async_tick())
+
+    assert coordinator.background_retries != []
+    key, _ = coordinator.background_retries[-1]
+    assert key == f"{coordinator.serial_number}:current"
+
+
+def test_solar_charge_retries_share_the_manual_switch_key() -> None:
+    """Mirrors the current-setting case for start and stop: switch.py
+    cancels its own manual toggle's retry under f"{serial}:charge", so
+    a queued solar STOP must be filed there too.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [5_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+        hass.states.set(
+            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_tick())  # starts the below-floor timer
+
+        clock[0] += solar.STOP_DELAY_SECONDS + 1
+
+        async def _rpc_failure(serial: str, attempts: int = 8) -> dict:
+            raise api_module.ApiCommandRejectedError(
+                "unreachable", code=api_module.COMMAND_ERROR_CODE_RPC_FAILURE
+            )
+
+        coordinator.api_client.async_stop_charge = _rpc_failure
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert coordinator.background_retries != []
+    key, _ = coordinator.background_retries[-1]
+    assert key == f"{coordinator.serial_number}:charge"
+
+
+def test_unknown_charging_status_does_not_assume_zero_draw() -> None:
+    """An unknown status is not evidence the car draws nothing; only a
+    confirmed not-charging status is. Otherwise an assumed zero draw,
+    computed from a payload that may be gone a moment later, still
+    feeds the five-minute average for the ticks that follow it.
+    """
+    controller, coordinator, _ = build()
+    controller.mode = controller_module.SolarMode.SIMULATE
+    coordinator.data = {}
+
+    asyncio.run(controller.async_tick())
+
+    assert controller.surplus_w is None
+
+
+def test_a_timeout_does_not_raise_out_of_the_tick() -> None:
+    """No total timeout is configured on the session, so aiohttp's own
+    default eventually raises a bare TimeoutError, outside the API's
+    exception hierarchy. Autonomous code needs a wider net than a
+    service call a human is waiting on, or this is an unhandled task
+    exception in the event loop every two minutes.
+    """
+    controller, coordinator, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    async def _timeout(
+        serial: str, current_ma: int, attempts: int = 8
+    ) -> dict:
+        raise asyncio.TimeoutError()
+
+    coordinator.api_client.async_set_max_charging_current = _timeout
+
+    asyncio.run(controller.async_tick())
+
+    assert len(controller._command_times) == 1
+
+
+def test_a_start_counts_two_attempts_not_one() -> None:
+    """A START issues both a current-set and a start-charge — two real
+    API calls — and each must count on its own, or a start-heavy
+    failure mode burns the hourly budget at half the real rate.
+    """
+    controller, coordinator, _ = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [6_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        asyncio.run(controller.async_tick())  # waiting to confirm
+        clock[0] += solar.START_DELAY_SECONDS + 1
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert len(coordinator.api_client.calls) == 2
+    assert len(controller._command_times) == 2
 
 
 def test_async_start_schedules_and_async_stop_cancels() -> None:

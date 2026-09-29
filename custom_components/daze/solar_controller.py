@@ -13,6 +13,7 @@ without needing a flag that could be wrong.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -329,11 +330,18 @@ class SolarController:
         Reading that as zero while the charger is actually charging
         misreads the car's own draw as surplus that vanished, which is
         the exact failure this project has already hit once.
+
+        Checked against ``is False`` rather than truthiness: an
+        *unknown* status (an absent or partial payload, where
+        is_charge_enabled returns None) is not evidence the car draws
+        nothing either, and reading it as zero pollutes the five-minute
+        average with an assumed reading that survives long after the
+        payload that produced it is gone.
         """
         value = _coerce_float(data.get("instantPowerAsWatt"))
         if value is not None:
             return value
-        return None if is_charge_enabled(data) else 0.0
+        return 0.0 if is_charge_enabled(data) is False else None
 
     def _read_surplus(self) -> float | None:
         """Compute surplus from the grid sensors and the car's draw."""
@@ -417,16 +425,21 @@ class SolarController:
 
     async def _send_command(
         self, description: str, call: Callable[[], Any], retry_key: str
-    ) -> bool:
+    ) -> bool | None:
         """Issue one command, handing a stuck link to the background retry.
 
         Mirrors the handling in number.py: an RPC failure — the Daze
         service could not reach the wallbox over its own link — is
         handed to the coordinator's existing background retry rather
         than retried here, since that already covers minutes of
-        attempts. Anything else (auth failure, an outright rejection)
-        is not retryable and is only logged; a bad command will not
-        start succeeding because it is repeated.
+        attempts. Anything else (auth failure, an outright rejection,
+        a bare timeout outside the API's own exception hierarchy — no
+        total timeout is configured on the session, so aiohttp's
+        default eventually raises one) is not retryable and is only
+        logged; a bad command will not start succeeding because it is
+        repeated, and autonomous code needs a wider net than a service
+        call a human is watching, or this becomes an unhandled task
+        exception in the event loop every two minutes.
 
         Args:
             description: Used in log messages and the retry's own
@@ -434,12 +447,18 @@ class SolarController:
             call: Performs the command. Must be safe to call again if
                 handed to the background retry.
             retry_key: Identifies this command for the background
-                retry, so a newer one supersedes an older one.
+                retry, so a newer one supersedes an older one, and
+                shared with whatever manual entity can act on the same
+                physical setting so the two supersede each other too.
 
         Returns:
-            True if the command reached the charger, or is now being
-            retried in the background. False if it was not sent and
-            will not be retried.
+            True if the command reached the charger. None if it was
+            only handed to the background retry — accepted for now,
+            but not yet confirmed, so a caller that must not proceed
+            until the charger has actually applied the change (see
+            the START branch of _carry_out) has to treat this the same
+            as failure. False if it was not sent and will not be
+            retried.
 
         """
         try:
@@ -457,12 +476,15 @@ class SolarController:
                         "%s", message
                     ),
                 )
-                return True
+                return None
 
             _LOGGER.info("Charger refused %s: %s", description, err)
             return False
         except ApiError as err:
             _LOGGER.warning("API error %s: %s", description, err)
+            return False
+        except asyncio.TimeoutError as err:
+            _LOGGER.warning("Timed out %s: %s", description, err)
             return False
 
         return True
@@ -471,15 +493,28 @@ class SolarController:
         """Issue the command a decision calls for.
 
         A command that fails outright is only logged; do not retry it
-        here (see _send_command). An attempt is still counted against
-        the hourly backstop regardless of outcome — otherwise a
-        command that keeps failing retries every tick and defeats the
-        one hard limit this feature has against a bug.
+        here (see _send_command). Each individual attempt is counted
+        against the hourly backstop regardless of outcome, and
+        separately per command — a START issues both a current-set and
+        a start-charge, and counting the branch once rather than each
+        call would let a start-heavy failure mode burn the real API at
+        twice the rate the backstop assumes.
+
+        Retry keys are shared with whatever manual entity can act on
+        the same physical setting: f"{serial}:current" with number.py's
+        current and power entities, f"{serial}:charge" with switch.py's
+        start/stop switch. That gives supersession for free in both
+        directions through the coordinator's own machinery — a newer
+        retry cancels an older one under the same key on the way in,
+        and each entity already cancels its own key on a successful
+        direct send — rather than a manual override leaving a queued
+        solar command to land minutes later and undo it.
         """
         client = self._coordinator.api_client
         serial = self._coordinator.serial_number
         data = self._coordinator.data or {}
-        retry_key = f"{serial}:solar"
+        current_key = f"{serial}:current"
+        charge_key = f"{serial}:charge"
 
         _LOGGER.info(
             "Solar control: %s — %s", decision.action.value, decision.reason
@@ -487,32 +522,45 @@ class SolarController:
 
         if decision.action is SolarAction.STOP:
             self._command_times.append(now)
-            if await self._send_command(
-                "stopping the charge",
-                lambda: client.async_stop_charge(serial),
-                retry_key,
+            if (
+                await self._send_command(
+                    "stopping the charge",
+                    lambda: client.async_stop_charge(serial),
+                    charge_key,
+                )
+                is not False
             ):
                 self._started_at = None
 
         elif decision.action is SolarAction.START:
-            self._command_times.append(now)
             sent = True
             if decision.target_watts is not None:
                 milliamps = watts_to_milliamps(decision.target_watts, data)
+                self._command_times.append(now)
                 sent = await self._send_command(
                     f"setting the charging current to {milliamps} mA",
                     lambda: client.async_set_max_charging_current(
                         serial, milliamps
                     ),
-                    retry_key,
+                    current_key,
                 )
 
-            if sent and await self._send_command(
-                "starting the charge",
-                lambda: client.async_start_charge(serial),
-                f"{retry_key}:start",
-            ):
-                self._started_at = now
+            # A limit only queued for the background retry has not
+            # reached the charger yet. Starting anyway would run the
+            # car at whatever limit it already had — importing from
+            # the grid, the one outcome pure-solar mode exists to
+            # prevent — so "queued" is not treated as "sent" here.
+            if sent is True:
+                self._command_times.append(now)
+                if (
+                    await self._send_command(
+                        "starting the charge",
+                        lambda: client.async_start_charge(serial),
+                        charge_key,
+                    )
+                    is not False
+                ):
+                    self._started_at = now
 
         elif decision.action is SolarAction.SET:
             if decision.target_watts is None:
@@ -525,7 +573,7 @@ class SolarController:
                 lambda: client.async_set_max_charging_current(
                     serial, milliamps
                 ),
-                retry_key,
+                current_key,
             )
 
         self._coordinator.async_schedule_refresh_in(10)
