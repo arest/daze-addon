@@ -837,7 +837,9 @@ def test_an_unknown_draw_does_not_trigger_a_backoff() -> None:
     controller.mode = controller_module.SolarMode.SIMULATE
     controller._start_issued_at = 0.0
 
-    controller._check_ignored_start(controller_module.time.monotonic())
+    controller._check_ignored_start(
+        controller_module.time.monotonic(), car_connected=True
+    )
 
     assert controller._backoff_until == 0.0
 
@@ -861,7 +863,7 @@ def test_the_draw_grace_period_is_honoured() -> None:
     try:
         controller._start_issued_at = clock[0]
         clock[0] += solar.DRAW_GRACE_SECONDS - 1
-        controller._check_ignored_start(clock[0])
+        controller._check_ignored_start(clock[0], car_connected=True)
     finally:
         controller_module.time.monotonic = original_monotonic
 
@@ -875,8 +877,13 @@ def test_a_sustained_idle_start_does_not_wait_for_the_rate_limit() -> None:
     mean it never elapses, so the back-off would never arm — leaving
     the hourly rate limit, a backstop against bugs and not a
     substitute for this, to blunt the loop instead, twenty commands
-    and half an hour late instead of a handful of commands and five
-    minutes.
+    and half an hour late instead of one start and two commands.
+
+    _carry_out also declines to resend a START while one is already
+    outstanding and its grace has not elapsed (fix round 2's I4), so
+    the trace is pinned at exactly one start rather than merely
+    "fewer than the rate limit" — a bound loose enough that a bug
+    reintroducing three or four repeat starts would still pass it.
     """
     controller, coordinator, _ = build(NOT_CHARGING_DATA)
     controller.mode = controller_module.SolarMode.ACTIVE
@@ -896,7 +903,11 @@ def test_a_sustained_idle_start_does_not_wait_for_the_rate_limit() -> None:
         controller_module.time.monotonic = original_monotonic
 
     assert controller._backoff_until > 0
-    assert len(coordinator.api_client.calls) < solar.MAX_COMMANDS_PER_HOUR
+    assert len(coordinator.api_client.calls) == 2
+    assert coordinator.api_client.calls == [
+        ("current", coordinator.api_client.calls[0][1]),
+        ("start", coordinator.serial_number),
+    ]
 
 
 def test_a_queued_start_does_not_arm_the_draw_grace_clock() -> None:
@@ -972,6 +983,130 @@ def test_simulate_mode_does_not_check_for_an_ignored_start() -> None:
     asyncio.run(controller.async_tick())
 
     assert controller._backoff_until == 0.0
+
+
+def test_an_unplugged_car_does_not_arm_the_backoff() -> None:
+    """A car unplugged shortly after a solar start satisfies every
+    condition the arming check looks for on its own: the session
+    disappears, evseStatus reads idle, is_charge_enabled is False, and
+    _car_draw_w correctly reads 0 W. But the car did not ignore the
+    start, it left — arming an hour-long back-off for that reason
+    would ignore forty more minutes of sun for something that never
+    happened.
+    """
+    data = dict(CHARGING_DATA)
+    data["evseStatus"] = "idle"
+    data["instantPowerAsWatt"] = 0
+    data["chargeSession"] = None
+    controller, _, _ = build(data)
+    controller.mode = controller_module.SolarMode.ACTIVE
+    controller._start_issued_at = 0.0
+
+    asyncio.run(controller.async_tick())
+
+    assert controller._backoff_until == 0.0
+    assert controller._start_issued_at is None
+
+
+def test_the_backoff_mark_is_cleared_once_armed() -> None:
+    """If the mark survived arming, the first tick after the back-off
+    itself expires would re-read the still-idle car and arm another
+    hour without ever issuing a new start — a permanent, silent,
+    zero-command back-off that never charges again that day.
+    """
+    data = dict(CHARGING_DATA)
+    data["evseStatus"] = "idle"
+    data["instantPowerAsWatt"] = 0
+    controller, _, _ = build(data)
+    controller.mode = controller_module.SolarMode.ACTIVE
+    controller._start_issued_at = 0.0
+
+    now = controller_module.time.monotonic()
+    controller._check_ignored_start(now, car_connected=True)
+    assert controller._backoff_until > 0
+
+    controller._backoff_until = 0.0  # pretend the hour has passed
+    controller._check_ignored_start(now, car_connected=True)
+
+    assert controller._backoff_until == 0.0
+
+
+def test_stopping_clears_the_draw_grace_mark() -> None:
+    """A mark left over from a previous start would anchor the next
+    start's draw-grace clock to the wrong start: the very next tick
+    could evaluate a 120-second-old start against an already-expired
+    grace, and arm an hour-long back-off on the wait-for-EV state
+    every start passes through.
+
+    The mark is set only moments before the STOP-triggering tick — and
+    left unset for the tick that starts the below-floor timer — so
+    that its own grace has not elapsed by the time STOP is carried
+    out. Otherwise _check_ignored_start's confirmed-draw clear (see
+    test_a_confirmed_draw_clears_the_waiting_to_see_mark) would clear
+    it first in the same tick, on this fixture's steady 3000 W draw,
+    and the STOP branch's own clear would never be exercised at all.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [21_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+        hass.states.set(
+            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_tick())  # starts the below-floor timer
+
+        clock[0] += solar.STOP_DELAY_SECONDS + 1
+        # A start issued moments before this tick, well within its own
+        # grace — so _check_ignored_start itself takes no action here.
+        controller._start_issued_at = clock[0] - 1
+        asyncio.run(controller.async_tick())  # stops
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert any(call[0] == "stop" for call in coordinator.api_client.calls)
+    assert controller._start_issued_at is None
+
+
+def test_a_confirmed_draw_clears_the_waiting_to_see_mark() -> None:
+    """A car that charged fine and later finishes must not be judged
+    against the start that got it going in the first place. Once the
+    car is seen drawing, the mark has to clear, or a later idle tick
+    reads a stale mark and arms the back-off for a reason that already
+    resolved.
+    """
+    controller, _, _ = build()  # CHARGING_DATA: instantPowerAsWatt=3000
+    controller.mode = controller_module.SolarMode.ACTIVE
+    controller._start_issued_at = 0.0
+
+    now = controller_module.time.monotonic()
+    controller._check_ignored_start(now, car_connected=True)
+
+    assert controller._backoff_until == 0.0
+    assert controller._start_issued_at is None
+
+
+def test_a_mode_round_trip_clears_the_draw_grace_mark() -> None:
+    """The mode setter already resets the above/below threshold timers
+    on any change; a start issued before an OFF detour must not
+    survive it, or the first tick back in ACTIVE evaluates a stale
+    start against an already-expired grace and arms an hour-long
+    back-off from a start that is an hour irrelevant.
+    """
+    controller, _, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+    controller._start_issued_at = 0.0
+
+    controller.mode = controller_module.SolarMode.OFF
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    assert controller._start_issued_at is None
 
 
 def test_a_queued_set_does_not_cancel_its_own_retry() -> None:

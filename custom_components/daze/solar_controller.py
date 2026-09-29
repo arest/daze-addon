@@ -169,6 +169,11 @@ class SolarController:
         self._mode = value
         self._above_since = None
         self._below_since = None
+        # A start issued before a detour through OFF or SIMULATE must
+        # not survive it: the first tick back in ACTIVE would evaluate
+        # it against an already-expired grace and arm an hour-long
+        # back-off from a start that may be long irrelevant by now.
+        self._start_issued_at = None
         _LOGGER.info("Solar control set to %s", value.value)
         self._notify()
 
@@ -276,7 +281,7 @@ class SolarController:
         # would let a dry run arm a real hour-long back-off from a
         # start that never happened.
         if self._mode is SolarMode.ACTIVE:
-            self._check_ignored_start(now)
+            self._check_ignored_start(now, state.car_connected)
 
         decision = decide(self._build_state(smoothed, now))
         self._last_decision = decision
@@ -447,7 +452,7 @@ class SolarController:
             if self._below_since is None:
                 self._below_since = now
 
-    def _check_ignored_start(self, now: float) -> None:
+    def _check_ignored_start(self, now: float, car_connected: bool) -> None:
         """Back off if a car we started never began drawing.
 
         When a car finishes it stops drawing while surplus is still
@@ -466,6 +471,12 @@ class SolarController:
         actually issued, and that reached the charger, sets
         ``_start_issued_at`` in the first place.
 
+        A disconnected car is checked before the grace period: a car
+        that has been unplugged reads as idle at 0 W, which otherwise
+        satisfies every condition this method checks for — but the
+        car did not ignore the start, it left, so the mark is cleared
+        without arming anything.
+
         Draw is read through ``_car_draw_w`` rather than the raw
         ``instantPowerAsWatt`` field, and its None is treated as "wait
         and see", not "not drawing": a missing or unparseable reading
@@ -474,6 +485,10 @@ class SolarController:
         car that may already be drawing fine.
         """
         if self._start_issued_at is None:
+            return
+
+        if not car_connected:
+            self._start_issued_at = None
             return
 
         if now - self._start_issued_at < DRAW_GRACE_SECONDS:
@@ -617,6 +632,26 @@ class SolarController:
                 self._start_issued_at = None
 
         elif decision.action is SolarAction.START:
+            # decide() has no memory of an outstanding start: while
+            # the charger sits idle with surplus sustained it returns
+            # START on every tick regardless. A further START while
+            # one is already outstanding and its grace has not
+            # elapsed is a retry of a start already in flight, not a
+            # fresh one — "backs off ... rather than retrying" means
+            # declining it, not resending it every 120s until the
+            # grace catches up. Must not touch _start_issued_at here
+            # either way — resetting it on decline would rebuild the
+            # exact bug fix round 1 closed (C1).
+            if (
+                self._start_issued_at is not None
+                and now - self._start_issued_at < DRAW_GRACE_SECONDS
+            ):
+                _LOGGER.info(
+                    "Solar control: a start is already outstanding, "
+                    "waiting to see if the car draws before retrying"
+                )
+                return
+
             sent = True
             if decision.target_watts is not None:
                 milliamps = watts_to_milliamps(decision.target_watts, data)
