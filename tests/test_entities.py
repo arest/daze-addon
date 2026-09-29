@@ -20,7 +20,7 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_DIR = ROOT / "custom_components" / "daze"
@@ -224,6 +224,8 @@ def _load_package() -> types.ModuleType:
 
 
 _load_package()
+
+from homeassistant.exceptions import HomeAssistantError
 
 api = sys.modules["daze_entities_under_test.api"]
 number_module = sys.modules["daze_entities_under_test.number"]
@@ -1209,6 +1211,119 @@ def test_an_offline_charge_stop_still_disarms_solar_control() -> None:
 
     assert coordinator.solar_controller.disarmed is True
     assert client.calls == [], "an offline charger must never be sent a command"
+
+
+def test_solar_select_offers_three_modes() -> None:
+    """One control with three states, so 'dry run on, solar off'
+    cannot be expressed."""
+    select_mod = sys.modules["daze_entities_under_test.select"]
+    assert select_mod.SOLAR_MODE_OPTIONS == ["off", "simulate", "active"]
+
+
+def _solar_select(configured: bool = False) -> tuple[Any, Any]:
+    """Build the solar select over a controller double."""
+    select_mod = sys.modules["daze_entities_under_test.select"]
+
+    class Ctl:
+        def __init__(self) -> None:
+            self.configured = configured
+            self.mode = None
+
+        def add_listener(self, cb):
+            return lambda: None
+
+    controller = Ctl()
+    entity = select_mod.DazeSolarControlSelect(
+        coordinator=FakeCoordinator(dict(BASE_DATA)),
+        controller=controller,
+        serial_number="SER1",
+        device_info={},
+    )
+    return entity, controller
+
+
+def test_solar_select_is_unavailable_without_sensors() -> None:
+    """Both grid sensors are required before it can do anything."""
+    entity, _ = _solar_select(configured=False)
+
+    assert entity.available is False
+
+
+def test_solar_select_refuses_to_arm_without_sensors() -> None:
+    """Availability is a hint to the dashboard, not a gate.
+
+    A service call or an automation reaches async_select_option
+    whatever the entity reports, so the refusal the spec requires —
+    "both are required before solar control can leave off" — has to be
+    enforced in the method that acts, and explained where the caller
+    can see it. Asserting `available is False` instead would pass
+    against a select that happily arms itself with no sensors at all.
+    """
+    entity, controller = _solar_select(configured=False)
+
+    raised = False
+    try:
+        asyncio.run(entity.async_select_option("active"))
+    except HomeAssistantError:
+        raised = True
+
+    assert raised, "arming without sensors was not refused"
+    assert controller.mode is None, "the mode was changed anyway"
+
+
+def test_solar_select_arms_once_the_sensors_are_there() -> None:
+    """The refusal must not be a blanket one."""
+    entity, controller = _solar_select(configured=True)
+
+    asyncio.run(entity.async_select_option("simulate"))
+
+    assert controller.mode is not None
+    assert controller.mode.value == "simulate"
+
+
+def test_the_reserve_survives_a_restart() -> None:
+    """An in-memory reserve returns to 0 W on every restart, and 0 W
+    means the house gets nothing before the car does. A setting that
+    exists to hold power back must not quietly stop holding it.
+    """
+    number_mod = sys.modules["daze_entities_under_test.number"]
+    const_mod = sys.modules["daze_entities_under_test.const"]
+
+    class Ctl:
+        reserve_w = 0.0
+
+    class FakeEntry:
+        options: ClassVar[dict[str, Any]] = {"poll_interval": 30}
+
+    class FakeEntries:
+        def __init__(self) -> None:
+            self.updated: list[dict[str, Any]] = []
+
+        def async_update_entry(self, entry, options=None, **kwargs):
+            entry.options = options
+            self.updated.append(options)
+
+    class FakeHass:
+        def __init__(self) -> None:
+            self.config_entries = FakeEntries()
+
+    entry = FakeEntry()
+    entity = number_mod.DazeSolarReserveEntity(
+        coordinator=FakeCoordinator(dict(BASE_DATA)),
+        controller=Ctl(),
+        entry=entry,
+        serial_number="SER1",
+        device_info={},
+    )
+    entity.hass = FakeHass()
+
+    asyncio.run(entity.async_set_native_value(1500))
+
+    assert entity.native_value == 1500
+    assert entry.options[const_mod.CONF_SOLAR_RESERVE] == 1500
+    # The rest of the options must survive the write, or saving a
+    # reserve would silently drop the user's grid sensors.
+    assert entry.options["poll_interval"] == 30
 
 
 def _main() -> int:

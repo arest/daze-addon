@@ -182,6 +182,47 @@ class DazeWallboxSensorEntity(
         return None
 
 
+class DazeSolarSurplusSensor(
+    CoordinatorEntity[DazeDataUpdateCoordinator], SensorEntity
+):
+    """The smoothed surplus the controller is working from.
+
+    Exposed so the figure everything else depends on can be seen and
+    graphed, rather than inferred from behaviour.
+    """
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+
+    def __init__(
+        self,
+        coordinator: DazeDataUpdateCoordinator,
+        controller: Any,
+        serial_number: str,
+        device_info: DeviceInfo,
+    ) -> None:
+        """Initialise the surplus sensor."""
+        super().__init__(coordinator)
+        self._controller = controller
+        self._serial_number = serial_number
+        self._attr_unique_id = f"{serial_number}_solar_surplus"
+        self._attr_device_info = device_info
+
+    async def async_added_to_hass(self) -> None:
+        """Redraw when the controller updates."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._controller.add_listener(self.async_write_ha_state)
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the smoothed surplus."""
+        return self._controller.surplus_w
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -204,5 +245,16 @@ async def async_setup_entry(
         )
         for description in SENSORS
     ]
+
+    solar_controller = entry_data.get("solar_controller")
+    if solar_controller is not None:
+        entities.append(
+            DazeSolarSurplusSensor(
+                coordinator=coordinator,
+                controller=solar_controller,
+                serial_number=serial_number,
+                device_info=device_info,
+            )
+        )
 
     async_add_entities(entities)

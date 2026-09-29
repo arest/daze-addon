@@ -129,6 +129,9 @@
       "next_scheduled_charge": {
         "name": "Prossima carica programmata",
         "entity_category": "diagnostic"
+      },
+      "solar_surplus": {
+        "name": "Surplus solare"
       }
     },
     "switch": {
@@ -144,11 +147,17 @@
       "max_charging_power": {
         "name": "Potenza",
         "entity_category": "config"
+      },
+      "solar_reserve": {
+        "name": "Riserva solare"
       }
     },
     "select": {
       "operation_mode": {
         "name": "Modalità operativa"
+      },
+      "solar_control": {
+        "name": "Controllo solare"
       }
     }
   },

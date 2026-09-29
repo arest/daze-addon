@@ -124,6 +124,9 @@
       },
       "next_scheduled_charge": {
         "name": "Next Scheduled Charge"
+      },
+      "solar_surplus": {
+        "name": "Solar surplus"
       }
     },
     "switch": {
@@ -137,11 +140,17 @@
       },
       "max_charging_power": {
         "name": "Power"
+      },
+      "solar_reserve": {
+        "name": "Solar reserve"
       }
     },
     "select": {
       "operation_mode": {
         "name": "Operation Mode"
+      },
+      "solar_control": {
+        "name": "Solar control"
       }
     }
   },

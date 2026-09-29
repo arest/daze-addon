@@ -31,8 +31,10 @@ from .api import (
     ApiError,
 )
 from .const import (
+    CONF_SOLAR_RESERVE,
     DOMAIN,
     INLINE_COMMAND_ATTEMPTS,
+    MAX_SOLAR_RESERVE,
     POST_COMMAND_REFRESH_DELAY,
 )
 from .coordinator import DazeDataUpdateCoordinator
@@ -542,15 +544,76 @@ class DazeWallboxPowerEntity(
         )
 
 
+class DazeSolarReserveEntity(
+    CoordinatorEntity[DazeDataUpdateCoordinator], NumberEntity
+):
+    """Watts to leave for the house before the car gets any."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = 0
+    _attr_native_max_value = MAX_SOLAR_RESERVE
+    _attr_native_step = 100
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+
+    def __init__(
+        self,
+        coordinator: DazeDataUpdateCoordinator,
+        controller: Any,
+        entry: ConfigEntry,
+        serial_number: str,
+        device_info: DeviceInfo,
+    ) -> None:
+        """Initialise the reserve control.
+
+        Args:
+            coordinator: The Daze data coordinator.
+            controller: The solar controller whose reserve this is.
+            entry: The config entry the reserve is persisted in.
+            serial_number: The wallbox serial number.
+            device_info: Device info for the device registry.
+
+        """
+        super().__init__(coordinator)
+        self._controller = controller
+        self._entry = entry
+        self._serial_number = serial_number
+        self._attr_unique_id = f"{serial_number}_solar_reserve"
+        self._attr_device_info = device_info
+
+    @property
+    def native_value(self) -> float:
+        """Return the configured reserve."""
+        return float(self._controller.reserve_w)
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set the reserve, and remember it across a restart.
+
+        Written to the config entry's options, not just to the
+        controller. An in-memory reserve returns to 0 W every time
+        Home Assistant restarts, and 0 W means the house gets nothing
+        before the car does — a setting whose whole job is holding
+        power back, quietly stopping. Task 6's _reload_signature is
+        what keeps this write from reloading the entry on every step
+        of the slider.
+        """
+        self._controller.reserve_w = value
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            options={**self._entry.options, CONF_SOLAR_RESERVE: int(value)},
+        )
+        self.async_write_ha_state()
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Daze Wallbox number entity.
+    """Set up Daze Wallbox number entities.
 
     Reads the coordinator, API client, serial number, and device info
-    from ``hass.data`` and registers the number entity.
+    from ``hass.data`` and registers the number entities.
     """
     entry_data = hass.data[DOMAIN][entry.entry_id]
     coordinator: DazeDataUpdateCoordinator = entry_data["coordinator"]
@@ -561,19 +624,31 @@ async def async_setup_entry(
         identifiers={(DOMAIN, serial_number)},
     )
 
-    async_add_entities(
-        [
-            DazeWallboxNumberEntity(
+    entities = [
+        DazeWallboxNumberEntity(
+            coordinator=coordinator,
+            api_client=api_client,
+            serial_number=serial_number,
+            device_info=device_info,
+        ),
+        DazeWallboxPowerEntity(
+            coordinator=coordinator,
+            api_client=api_client,
+            serial_number=serial_number,
+            device_info=device_info,
+        ),
+    ]
+
+    solar_controller = entry_data.get("solar_controller")
+    if solar_controller is not None:
+        entities.append(
+            DazeSolarReserveEntity(
                 coordinator=coordinator,
-                api_client=api_client,
+                controller=solar_controller,
+                entry=entry,
                 serial_number=serial_number,
                 device_info=device_info,
-            ),
-            DazeWallboxPowerEntity(
-                coordinator=coordinator,
-                api_client=api_client,
-                serial_number=serial_number,
-                device_info=device_info,
-            ),
-        ]
-    )
+            )
+        )
+
+    async_add_entities(entities)

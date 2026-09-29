@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components import persistent_notification
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -253,15 +254,103 @@ class DazeWallboxSelectEntity(
         )
 
 
+SOLAR_MODE_OPTIONS = ["off", "simulate", "active"]
+
+
+class DazeSolarControlSelect(
+    CoordinatorEntity[DazeDataUpdateCoordinator], SelectEntity
+):
+    """Arm solar control, in simulation or for real.
+
+    A single tri-state rather than a switch plus a dry-run flag, so the
+    meaningless combination cannot be selected.
+    """
+
+    _attr_has_entity_name = True
+    _attr_options = SOLAR_MODE_OPTIONS
+
+    def __init__(
+        self,
+        coordinator: DazeDataUpdateCoordinator,
+        controller: Any,
+        serial_number: str,
+        device_info: DeviceInfo,
+    ) -> None:
+        """Initialise the control.
+
+        Args:
+            coordinator: The Daze data coordinator.
+            controller: The solar controller to drive.
+            serial_number: The wallbox serial number.
+            device_info: Device info for the device registry.
+
+        """
+        super().__init__(coordinator)
+        self._controller = controller
+        self._serial_number = serial_number
+        self._attr_unique_id = f"{serial_number}_solar_control"
+        self._attr_device_info = device_info
+
+    async def async_added_to_hass(self) -> None:
+        """Redraw when the controller decides something."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._controller.add_listener(self.async_write_ha_state)
+        )
+
+    @property
+    def available(self) -> bool:
+        """Only usable once both grid sensors have been chosen."""
+        return bool(self._controller.configured)
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the controller's mode."""
+        mode = self._controller.mode
+        return mode.value if mode is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the last decision, so the feature can be understood."""
+        decision = self._controller.last_decision
+        return {
+            "surplus_w": self._controller.surplus_w,
+            "last_action": decision.action.value if decision else None,
+            "last_reason": decision.reason if decision else None,
+        }
+
+    async def async_select_option(self, option: str) -> None:
+        """Set the mode, refusing to arm before it can work.
+
+        `available` is a hint for the dashboard. A service call or an
+        automation arrives here whatever the entity reports, so the
+        rule that both grid sensors are required before solar control
+        leaves "off" has to be enforced in the method that acts — and
+        raised, not logged, because the caller asked for something and
+        is entitled to know it did not happen.
+        """
+        from .solar_controller import SolarMode
+
+        if option != "off" and not self._controller.configured:
+            raise HomeAssistantError(
+                "Solar control needs both a grid import and a grid "
+                "export sensor before it can be armed. Set them in the "
+                "integration's options."
+            )
+
+        self._controller.mode = SolarMode(option)
+        self.async_write_ha_state()
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Daze Wallbox select entity.
+    """Set up Daze Wallbox select entities.
 
     Reads the coordinator, API client, serial number, and device info
-    from ``hass.data`` and registers the select entity.
+    from ``hass.data`` and registers the select entities.
     """
     entry_data = hass.data[DOMAIN][entry.entry_id]
     coordinator: DazeDataUpdateCoordinator = entry_data["coordinator"]
@@ -272,13 +361,24 @@ async def async_setup_entry(
         identifiers={(DOMAIN, serial_number)},
     )
 
-    async_add_entities(
-        [
-            DazeWallboxSelectEntity(
+    entities: list[SelectEntity] = [
+        DazeWallboxSelectEntity(
+            coordinator=coordinator,
+            api_client=api_client,
+            serial_number=serial_number,
+            device_info=device_info,
+        )
+    ]
+
+    solar_controller = entry_data.get("solar_controller")
+    if solar_controller is not None:
+        entities.append(
+            DazeSolarControlSelect(
                 coordinator=coordinator,
-                api_client=api_client,
+                controller=solar_controller,
                 serial_number=serial_number,
                 device_info=device_info,
             )
-        ]
-    )
+        )
+
+    async_add_entities(entities)
