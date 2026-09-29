@@ -322,8 +322,12 @@ decisions against actual production.
 
 ## Rollout
 
-1. Ship with solar control defaulting to `off`.
-2. First enable lands in `simulate`, not `active`.
+1. Ship with solar control inert. The controller itself defaults to
+   `off`, so nothing runs before the entities exist.
+2. The select lands on `simulate` the first time it is added, and
+   restores whatever the user last chose after that. So a fresh install
+   *shows* `simulate` rather than `off`: it decides and logs, and sends
+   nothing. Nothing reaches the charger until the user picks `active`.
 3. Document the validation day in the README and in
    `docs/solar-surplus-charging.md`, which becomes the "do it yourself"
    alternative rather than the only option.
