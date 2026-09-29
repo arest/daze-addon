@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
 from typing import Any
@@ -719,14 +720,22 @@ def test_unknown_charging_status_does_not_assume_zero_draw() -> None:
     confirmed not-charging status is. Otherwise an assumed zero draw,
     computed from a payload that may be gone a moment later, still
     feeds the five-minute average for the ticks that follow it.
+
+    Exercises _read_surplus directly rather than through a full tick:
+    with an entirely empty payload, unsupported_reason's own guard ("the
+    charger has not reported yet") now makes async_tick stand down
+    before it ever reaches a sensor, so decide() is never reached from
+    a live tick for this exact case any more. The zero-draw guard this
+    test protects is still correct and still reachable if that earlier
+    guard is ever relaxed, so it is checked at its own layer instead of
+    one that can no longer reach it — the same move
+    test_no_coordinator_data_reads_as_not_reachable already made for
+    charger_reachable.
     """
     controller, coordinator, _ = build()
-    controller.mode = controller_module.SolarMode.SIMULATE
     coordinator.data = {}
 
-    asyncio.run(controller.async_tick())
-
-    assert controller.surplus_w is None
+    assert controller._read_surplus() is None
 
 
 def test_a_timeout_does_not_raise_out_of_the_tick() -> None:
@@ -1939,6 +1948,167 @@ def test_the_tick_stands_down_for_an_unsupported_setup_set_directly() -> None:
     assert coordinator.api_client.calls == []
     assert controller.last_decision is None, (
         "the tick evaluated an unsupported setup instead of standing down"
+    )
+
+
+def test_a_charge_already_running_counts_as_having_run() -> None:
+    """Timers start at zero after a restart. Without seeding, an
+    unelapsed minimum run time could stop a healthy charge moments
+    after boot."""
+    controller, _, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    asyncio.run(controller.async_tick())
+
+    # Assert how far back the mark was seeded, not merely that one exists.
+    # Seeding it to the present moment would satisfy "is not None" while
+    # leaving the charge unstoppable for the next ten minutes, which is the
+    # bug this seeding exists to prevent.
+    assert controller._started_at is not None
+    elapsed = time.monotonic() - controller._started_at
+    assert elapsed >= solar.MIN_RUN_SECONDS, (
+        "a charge already running must count as having served its minimum "
+        f"run time, but the mark was seeded only {elapsed:.0f}s back"
+    )
+
+
+def test_a_stop_that_could_not_be_sent_is_not_re_issued_every_tick() -> None:
+    """_carry_out clears the minimum-run clock after a stop it sent,
+    and "sent" includes one only queued for the background retry —
+    where the charger is still charging. Seeding that clock again on
+    the next tick makes decide() return STOP again, and again every
+    two minutes, until the hourly backstop trips forty minutes later.
+    Handing a stuck link to the background retry and leaving it there
+    is the spec's own rule; this is why the seeding is once per charge
+    and not once per tick.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [24_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+        hass.states.set(
+            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_tick())  # starts the below-floor timer
+
+        clock[0] += solar.STOP_DELAY_SECONDS + 1
+
+        async def _rpc_failure(serial: str, attempts: int = 8) -> dict:
+            coordinator.api_client.calls.append(("stop", serial))
+            raise api_module.ApiCommandRejectedError(
+                "unreachable", code=api_module.COMMAND_ERROR_CODE_RPC_FAILURE
+            )
+
+        coordinator.api_client.async_stop_charge = _rpc_failure
+        asyncio.run(controller.async_tick())
+
+        for _ in range(3):
+            clock[0] += solar.TICK_SECONDS
+            asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    stops = len(
+        [call for call in coordinator.api_client.calls if call[0] == "stop"]
+    )
+    assert stops == 1, f"the queued stop was re-issued: {stops} attempts"
+
+
+def test_a_charge_that_starts_later_is_seeded_in_its_turn() -> None:
+    """Once per charging episode, not once per lifetime.
+
+    A charge the user starts by hand an hour from now has also been
+    running longer than we have been watching it. If the flag never
+    reset, that charge's minimum-run clock would read as zero for ever
+    and solar control could never stop it — the mirror image of the
+    bug the seeding exists to fix.
+    """
+    controller, coordinator, _ = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.SIMULATE
+
+    asyncio.run(controller.async_tick())
+    assert controller._started_at is None
+
+    coordinator.data = dict(CHARGING_DATA)
+    asyncio.run(controller.async_tick())
+
+    assert controller._started_at is not None
+
+
+def test_simulate_previews_a_stop_on_an_already_running_charge() -> None:
+    """The seeding must sit outside the `if self._mode is
+    SolarMode.ACTIVE:` gate.
+
+    A simulate dry run of a charge that is already running has to
+    preview the stop it would make. Seeded only under the ACTIVE gate,
+    a SIMULATE tick would never populate _started_at, and decide()
+    would report "the minimum run time has not elapsed" forever instead
+    of the STOP a real arm would make.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.SIMULATE
+
+    clock = [25_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        hass.states.set(
+            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_tick())  # seeds, starts the timer
+
+        clock[0] += solar.STOP_DELAY_SECONDS + 1
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert controller.last_decision is not None
+    assert controller.last_decision.action is solar.SolarAction.STOP, (
+        "expected a previewed STOP, got: "
+        f"{controller.last_decision.reason!r}"
+    )
+    assert coordinator.api_client.calls == [], "simulate must send nothing"
+
+
+def test_disarm_clears_the_seeding_flag_so_a_rearm_can_reseed() -> None:
+    """The mirror bug, reached through disarm/re-arm instead of a
+    reboot.
+
+    disarm() clears _started_at as part of ending the episode, but if
+    it left _charge_seeded set, a re-arm onto the very same
+    still-running charge would see the flag already True and never
+    reseed the clock it had just zeroed — the minimum run time would
+    then read as unelapsed for ever, on a charge already minutes old,
+    and solar control could never stop it.
+    """
+    controller, _, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    asyncio.run(controller.async_tick())
+    assert controller._started_at is not None
+    assert controller._charge_seeded is True
+
+    controller.disarm("the charging limit was set manually")
+    assert controller._started_at is None
+    assert controller._charge_seeded is False
+
+    controller.mode = controller_module.SolarMode.ACTIVE
+    asyncio.run(controller.async_tick())
+
+    assert controller._started_at is not None
+    elapsed = time.monotonic() - controller._started_at
+    assert elapsed >= solar.MIN_RUN_SECONDS, (
+        "the re-armed charge was not reseeded, so it can never be stopped"
     )
 
 

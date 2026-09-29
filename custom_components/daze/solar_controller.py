@@ -46,6 +46,7 @@ from .solar import (
     IGNORED_START_BACKOFF_SECONDS,
     MAX_COMMANDS_PER_HOUR,
     MIN_MEANINGFUL_DRAW_W,
+    MIN_RUN_SECONDS,
     TICK_SECONDS,
     SolarAction,
     SolarDecision,
@@ -164,6 +165,10 @@ class SolarController:
         # what started the charge; _check_ignored_start reads
         # _start_issued_at instead, never this one.
         self._started_at: float | None = None
+        # Whether the minimum-run clock has already been seeded for the
+        # charging episode under way. Once per episode, not once per
+        # tick — see the seeding itself in _async_evaluate for why.
+        self._charge_seeded = False
         # "We issued a start and are waiting to see whether the car
         # draws." Set only in _carry_out, only when a start genuinely
         # reached the charger, so a charge this controller did not
@@ -214,6 +219,15 @@ class SolarController:
         and arms a 60-minute back-off for a start nobody is waiting on.
         A back-off already armed goes too — it was armed to stop this
         controller retrying, and the user has just taken over anyway.
+
+        The seeding flag goes with it too: left set across a disarm,
+        a re-arm onto the same still-running charge would see
+        _charge_seeded already True and never reseed _started_at,
+        which this same method has just cleared to None — the minimum
+        run time would then read as unelapsed for ever, on a charge
+        already minutes or hours old, and solar control could never
+        stop it. The mirror image of the restart bug, reached through
+        disarm/re-arm instead of a reboot.
         """
         if self._mode is SolarMode.OFF:
             return
@@ -225,6 +239,7 @@ class SolarController:
         self._collapsed_since = None
         self._started_at = None
         self._start_issued_at = None
+        self._charge_seeded = False
         self._backoff_until = 0.0
         self._notify()
 
@@ -458,6 +473,41 @@ class SolarController:
 
         state = self._build_state(smoothed, now)
         self._track_thresholds(state, now, surplus)
+
+        # Timers begin at zero after a restart. A charge that is
+        # already running has, by definition, been running: without
+        # this the minimum run time reads as unelapsed and a healthy
+        # charge could be stopped moments after boot.
+        #
+        # Once per charging episode, not once per tick. _carry_out
+        # clears the minimum-run clock after a stop it *sent*, and
+        # "sent" includes one only queued for the background retry —
+        # where the charger is still charging. Re-seeding on the next
+        # tick would put the clock back, decide() would return STOP
+        # again, and it would do so every two minutes until the hourly
+        # backstop tripped forty minutes later. A stop that will not
+        # land is the background retry's business, and the spec says
+        # so: "hand to the existing background retry; do not retry
+        # here."
+        #
+        # The flag resets when the charge is observed to end, so the
+        # next one — including a charge the user starts by hand — is
+        # seeded in its turn. A flag that only ever set once would
+        # leave that later charge with a zero minimum-run clock for
+        # ever, and solar control could never stop it.
+        #
+        # This seeds the minimum-run clock only. The draw-grace clock
+        # is a separate attribute, set solely when this controller
+        # issues a start of its own, and it must stay unset here: a
+        # charge that was already running was never ours to judge, and
+        # a charger sitting in waiting_for_ev at 0 W at boot would
+        # otherwise arm an hour-long back-off on a healthy charge.
+        if not state.charging:
+            self._charge_seeded = False
+        elif not self._charge_seeded:
+            self._charge_seeded = True
+            if self._started_at is None:
+                self._started_at = now - MIN_RUN_SECONDS
 
         # A start only simulated never reached the charger, so the
         # car was never given the chance to draw. Checking anyway

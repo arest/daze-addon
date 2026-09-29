@@ -19,6 +19,7 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import (
@@ -258,7 +259,7 @@ SOLAR_MODE_OPTIONS = ["off", "simulate", "active"]
 
 
 class DazeSolarControlSelect(
-    CoordinatorEntity[DazeDataUpdateCoordinator], SelectEntity
+    CoordinatorEntity[DazeDataUpdateCoordinator], SelectEntity, RestoreEntity
 ):
     """Arm solar control, in simulation or for real.
 
@@ -292,11 +293,36 @@ class DazeSolarControlSelect(
         self._attr_device_info = device_info
 
     async def async_added_to_hass(self) -> None:
-        """Redraw when the controller decides something."""
+        """Redraw when the controller decides something, and remember
+        the mode across a restart.
+
+        Restoring writes straight to the controller rather than
+        through async_select_option, so it cannot raise at startup: a
+        setup that is temporarily unsupported — the charger has not
+        polled yet, say — must come back as the user left it and be
+        refused later by the guard in the tick (_async_evaluate's own
+        stand-down), not lose the setting because of a race with the
+        first refresh.
+
+        No stored state at all is a different case from a restart: it
+        is this select existing for the first time, which the spec's
+        Rollout section calls "first enable" and asks to land in
+        simulate, not active — the controller's own constructor
+        default of off is what a fresh install shows before this
+        entity has ever run once.
+        """
         await super().async_added_to_hass()
         self.async_on_remove(
             self._controller.add_listener(self.async_write_ha_state)
         )
+
+        from .solar_controller import SolarMode
+
+        last = await self.async_get_last_state()
+        if last is not None and last.state in SOLAR_MODE_OPTIONS:
+            self._controller.mode = SolarMode(last.state)
+        elif last is None:
+            self._controller.mode = SolarMode.SIMULATE
 
     @property
     def available(self) -> bool:

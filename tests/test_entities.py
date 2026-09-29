@@ -127,7 +127,10 @@ def install_homeassistant_stubs() -> list[tuple[Any, Any, Any]]:
         _records=notifications,
     )
     _module("homeassistant.components.number", NumberEntity=object)
-    _module("homeassistant.components.select", SelectEntity=object)
+    _module(
+        "homeassistant.components.select",
+        SelectEntity=type("SelectEntity", (), {}),
+    )
     _module("homeassistant.components.switch", SwitchEntity=object)
     _module(
         "homeassistant.components.sensor",
@@ -182,7 +185,8 @@ def install_homeassistant_stubs() -> list[tuple[Any, Any, Any]]:
     )
     _module("homeassistant.helpers.entity_platform", AddEntitiesCallback=object)
     _module(
-        "homeassistant.helpers.restore_state", RestoreEntity=object
+        "homeassistant.helpers.restore_state",
+        RestoreEntity=type("RestoreEntity", (), {}),
     )
     _module("homeassistant.helpers.config_validation", positive_int=int)
 
@@ -1373,6 +1377,54 @@ def test_setting_the_reserve_writes_it_to_config_entry_options() -> None:
     # The rest of the options must survive the write, or saving a
     # reserve would silently drop the user's grid sensors.
     assert entry.options["poll_interval"] == 30
+
+
+def test_the_solar_select_restores_its_mode() -> None:
+    """The spec asks for restoration across a restart by name.
+
+    Without it every Home Assistant restart silently disarms solar
+    control: the select comes back "off", the car stops following the
+    sun, and nothing says so.
+    """
+    entity, controller = _solar_select(configured=True)
+
+    class LastState:
+        state = "active"
+
+    async def _last_state() -> Any:
+        return LastState()
+
+    entity.async_get_last_state = _last_state
+
+    asyncio.run(entity.async_added_to_hass())
+
+    assert controller.mode is not None
+    assert controller.mode.value == "active"
+
+
+def test_the_solar_select_defaults_to_simulate_with_no_stored_state() -> None:
+    """No stored state at all is not a restart; it is this select
+    existing for the first time.
+
+    The spec's Rollout section calls this "first enable" and asks it
+    to land in simulate, not active — the safe dry run, so a fresh
+    install never drives real hardware before anyone has looked at
+    what it would decide. Leaving the mode alone here would strand it
+    at the controller's own constructor default (off), which is correct
+    before this entity has ever run once but wrong the first time it
+    does.
+    """
+    entity, controller = _solar_select(configured=True)
+
+    async def _last_state() -> Any:
+        return None
+
+    entity.async_get_last_state = _last_state
+
+    asyncio.run(entity.async_added_to_hass())
+
+    assert controller.mode is not None
+    assert controller.mode.value == "simulate"
 
 
 def _main() -> int:
