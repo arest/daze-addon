@@ -1301,6 +1301,23 @@ def test_solar_select_arms_once_the_sensors_are_there() -> None:
     assert controller.mode.value == "simulate"
 
 
+def test_solar_select_off_is_never_refused() -> None:
+    """The brief's own named trap: a charger refused for any reason —
+    unconfigured sensors, eco mode, an undeclared supply — must still
+    be switchable to "off", or a user could never turn solar control
+    off again until the refusal condition itself clears. Only the
+    non-off branch of async_select_option may consult
+    unsupported_reason at all.
+    """
+    entity, controller = _solar_select(configured=False)
+    assert entity.available is False, "the fixture must start refused"
+
+    asyncio.run(entity.async_select_option("off"))
+
+    assert controller.mode is not None
+    assert controller.mode.value == "off"
+
+
 def test_setting_the_reserve_writes_it_to_config_entry_options() -> None:
     """The write half of the restart guarantee: this only proves the
     number entity persists what it is given.

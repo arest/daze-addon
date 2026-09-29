@@ -382,7 +382,18 @@ class DazeOptionsFlowHandler(OptionsFlow):
         solar control simply refuses to arm without them.
         """
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Merged, not replaced: this form has no field for the
+            # solar reserve — that entity is Task 7's own, and writes
+            # it to these same options directly — so saving this form
+            # verbatim as the new options would silently drop it back
+            # to 0 W on every save. Latent before this task; this task
+            # is what gives every existing user a reason to reopen this
+            # form, since solar control now refuses to arm until the
+            # supply question below is answered.
+            return self.async_create_entry(
+                title="",
+                data={**self._config_entry.options, **user_input},
+            )
 
         current = self._config_entry.options.get(
             CONF_POLL_INTERVAL,

@@ -136,6 +136,7 @@ solar = sys.modules["daze_solar_ctl.solar"]
 optimistic = sys.modules["daze_solar_ctl.optimistic"]
 controller_module = sys.modules["daze_solar_ctl.solar_controller"]
 api_module = sys.modules["daze_solar_ctl.api"]
+payload_module = sys.modules["daze_solar_ctl.payload"]
 
 
 class FakeApi:
@@ -1818,6 +1819,24 @@ def test_three_phase_supply_with_a_single_phase_charger_is_refused() -> None:
     assert "phase" in controller.unsupported_reason
 
 
+def test_an_unreported_charger_phase_count_refuses_on_a_three_phase_supply() -> (
+    None
+):
+    """"the charger has not said" must be distinguishable from "the
+    charger said single-phase": CHARGING_DATA carries no
+    evseIsThreePhase key at all here, the shape a payload missing the
+    field actually has, not an injected False. Treating an absent
+    reading the same as a confirmed single-phase charger would still
+    refuse correctly by accident, but for the wrong reason, and would
+    tell the user the wrong thing to go fix.
+    """
+    controller, _, _ = build(dict(CHARGING_DATA), supply_phases="three")
+
+    assert controller.unsupported_reason is not None
+    assert "phase" in controller.unsupported_reason
+    assert "not said" in controller.unsupported_reason
+
+
 def test_a_matched_single_phase_pair_is_supported() -> None:
     data = dict(CHARGING_DATA)
     data["evseIsThreePhase"] = False
@@ -1849,12 +1868,60 @@ def test_eco_mode_refuses_to_arm() -> None:
 
 
 def test_a_charger_schedule_refuses_to_arm() -> None:
-    data = dict(CHARGING_DATA)
-    data["schedules"] = [{"id": 1}]
+    """A configured schedule is reported as ``nextScheduleInfo``, an
+    object, not ``schedules``, a list — and payload._scalars drops
+    every list value while merge_payload flattens a payload, so a
+    fixture that injects "schedules" straight into a flat dict tests a
+    key the real payload never carries at this level. Routed through
+    merge_payload instead, so the guard is exercised against data
+    shaped the way a real merged payload actually is: this is the same
+    mistake, in the same task, that a prior round already found in the
+    supply-phase guard.
+    """
+    remote_info = dict(CHARGING_DATA)
+    remote_info["nextScheduleInfo"] = {"startTime": "2026-09-30T02:00:00Z"}
+    data = payload_module.merge_payload(remote_info, None)
     controller, _, _ = build(data)
 
     assert controller.unsupported_reason is not None
     assert "schedule" in controller.unsupported_reason
+
+
+def test_no_schedule_is_supported_through_a_real_merge() -> None:
+    """The mirror case: merge_payload's own null-schedule shape must
+    not be misread as a schedule set, or every charger with none
+    configured would be refused.
+    """
+    remote_info = dict(CHARGING_DATA)
+    remote_info["nextScheduleInfo"] = None
+    data = payload_module.merge_payload(remote_info, None)
+    controller, _, _ = build(data)
+
+    assert controller.unsupported_reason is None
+
+
+def test_the_tick_stands_down_for_an_unsupported_setup_set_directly() -> None:
+    """The select's own refusal in async_select_option is not the only
+    way into ACTIVE: a restored mode (Task 10 gives the select
+    RestoreEntity, setting the controller's mode directly at startup)
+    never passes through it at all. A three-phase house with a
+    single-phase charger, mode restored straight to ACTIVE, is exactly
+    the hazard this task exists to prevent — the charger driven to its
+    ceiling on the one phase it is wired to, following surplus netted
+    across three. decide() has no phase field to catch this itself;
+    only _async_evaluate's own stand-down can.
+    """
+    data = dict(CHARGING_DATA)
+    data["evseIsThreePhase"] = False
+    controller, coordinator, _ = build(data, supply_phases="three")
+    controller.mode = controller_module.SolarMode.ACTIVE  # set directly
+
+    asyncio.run(controller.async_tick())
+
+    assert coordinator.api_client.calls == []
+    assert controller.last_decision is None, (
+        "the tick evaluated an unsupported setup instead of standing down"
+    )
 
 
 def _main() -> int:

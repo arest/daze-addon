@@ -287,18 +287,32 @@ class SolarController:
         if not data:
             return "the charger has not reported yet"
 
-        if self._supply_phases == SUPPLY_PHASES_THREE and not bool(
-            data.get("evseIsThreePhase")
-        ):
-            return (
-                "the supply is three-phase and the charger is single-phase, "
-                "so exported power may be on a phase it cannot use"
-            )
+        if self._supply_phases == SUPPLY_PHASES_THREE:
+            # is False, not "not bool(...)": a captured real payload
+            # carries this field (tests/test_payload.py's EVSE_RECORD),
+            # so an absent reading is not the same fact as a charger
+            # that has confirmed it is single-phase, and the two need
+            # different messages — the same distinction _car_draw_w,
+            # _read_power and charger_reachable already make on this
+            # branch, between "confirmed no" and "do not know".
+            three_phase_charger = data.get("evseIsThreePhase")
+            if three_phase_charger is None:
+                return "the charger has not said how many phases it uses"
+
+            if three_phase_charger is False:
+                return (
+                    "the supply is three-phase and the charger is "
+                    "single-phase, so exported power may be on a phase "
+                    "it cannot use"
+                )
 
         if data.get("ecoModeEnabled"):
             return "the charger's own eco mode is controlling it"
 
-        if data.get("schedules"):
+        # Not "schedules": see the comment on schedule_info in
+        # _build_state — that key never survives merge_payload, and
+        # nextScheduleInfo is the one that does.
+        if data.get("nextScheduleInfo"):
             return "the charger has a schedule set"
 
         return None
@@ -643,7 +657,15 @@ class SolarController:
             data.get("maxExternalChargingCurrentInMilliAmps")
         ) or 0.0
         charging = bool(is_charge_enabled(data))
-        schedules = data.get("schedules")
+        # Not "schedules": that key is a list, which payload._scalars
+        # drops from every source merge_payload flattens, so it never
+        # survives to the merged payload. merge_payload re-attaches
+        # exactly two nested objects by name, and nextScheduleInfo is
+        # the one the charger uses to report a configured schedule —
+        # an object when one is set, None when it is not (see
+        # sensor_catalog.get_next_scheduled_charge and
+        # tests/test_payload.py's schedule-object tests).
+        schedule_info = data.get("nextScheduleInfo")
 
         return SolarState(
             surplus_w=smoothed,
@@ -661,7 +683,7 @@ class SolarController:
             charger_reachable=bool(data)
             and charger_offline_reason(data) is None,
             eco_mode_on=bool(data.get("ecoModeEnabled")),
-            schedule_set=bool(schedules),
+            schedule_set=bool(schedule_info),
             car_connected=data.get("chargeSession") is not None or charging,
             seconds_above_threshold=self._elapsed(self._above_since, now),
             seconds_below_threshold=self._elapsed(self._below_since, now),
