@@ -1944,8 +1944,8 @@ In `custom_components/daze/solar_controller.py`, add to `SolarController`:
 `_collapsed_since` is Task 8's; if Task 8 has not run yet, leave that
 line out and Task 8 will add it with the attribute.
 
-Clearing `_started_at` here is safe because Task 9 seeds it again from
-an observed charge, once per charging episode. If Task 9's seeding is
+Clearing `_started_at` here is safe because Task 10 seeds it again from
+an observed charge, once per charging episode. If Task 10's seeding is
 ever removed, this line must go with it, or a charge still running when
 solar control is re-armed can never be stopped: `_elapsed(None)` is
 `0.0`, which reads as "just started" for ever.
@@ -3215,7 +3215,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 9: Remaining guards, and surviving a restart
+### Task 9: The supply declaration, and the refusals
 
 **Files:**
 - Modify: `custom_components/daze/const.py`
@@ -3225,8 +3225,8 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Modify: `custom_components/daze/__init__.py` (one more keyword on the controller)
 - Modify: `custom_components/daze/solar_controller.py`
 - Modify: `custom_components/daze/select.py` (the solar select)
-- Test: `tests/test_solar_controller.py` (append before `_main`)
-- Test: `tests/test_entities.py` (append before `_main`)
+- Test: `tests/test_solar_controller.py` (append before `_main`, and change `build`)
+- Test: `tests/test_entities.py` (the `_solar_select` double from Task 7)
 
 **Interfaces:**
 - Consumes: `SolarController` from Task 4, `DazeSolarControlSelect` from Task 7.
@@ -3241,10 +3241,10 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
     not". The select uses it for availability and for refusing to arm,
     the tick uses it to stand down, and the README quotes it.
 
-Four things the spec requires that nothing yet implements: refusing a
-supply the charger cannot follow, standing down for the charger's own
-eco mode and schedules, surviving a Home Assistant restart without
-stopping a healthy charge, and remembering the mode.
+Surviving a restart is **Task 10**. This task is the refusals: three
+things the spec requires that nothing yet implements — refusing a supply
+the charger cannot follow, refusing one that has not been described at
+all, and standing down for the charger's own eco mode and schedules.
 
 **Why the supply is declared rather than detected.** The Daze payload
 has exactly one phase field, `evseIsThreePhase`, and `payload.py:308`
@@ -3283,9 +3283,7 @@ def build(
 
 passing `supply_phases=supply_phases` to the constructor.
 
-Then append to `tests/test_solar_controller.py`, before `_main`. Add
-`import time` to the file's imports if it is not already there — the
-seeding test below reads `time.monotonic()`:
+Then append to `tests/test_solar_controller.py`, before `_main`:
 
 ```python
 def test_an_undeclared_supply_refuses_to_run() -> None:
@@ -3348,127 +3346,10 @@ def test_a_charger_schedule_refuses_to_arm() -> None:
 
     assert controller.unsupported_reason is not None
     assert "schedule" in controller.unsupported_reason
-
-
-def test_a_charge_already_running_counts_as_having_run() -> None:
-    """Timers start at zero after a restart. Without seeding, an
-    unelapsed minimum run time could stop a healthy charge moments
-    after boot."""
-    controller, _, _ = build()
-    controller.mode = controller_module.SolarMode.ACTIVE
-
-    asyncio.run(controller.async_tick())
-
-    # Assert how far back the mark was seeded, not merely that one exists.
-    # Seeding it to the present moment would satisfy "is not None" while
-    # leaving the charge unstoppable for the next ten minutes, which is the
-    # bug this seeding exists to prevent.
-    assert controller._started_at is not None
-    elapsed = time.monotonic() - controller._started_at
-    assert elapsed >= solar.MIN_RUN_SECONDS, (
-        "a charge already running must count as having served its minimum "
-        f"run time, but the mark was seeded only {elapsed:.0f}s back"
-    )
-
-
-def test_a_stop_that_could_not_be_sent_is_not_re_issued_every_tick() -> None:
-    """_carry_out clears the minimum-run clock after a stop it sent,
-    and "sent" includes one only queued for the background retry —
-    where the charger is still charging. Seeding that clock again on
-    the next tick makes decide() return STOP again, and again every
-    two minutes, until the hourly backstop trips forty minutes later.
-    Handing a stuck link to the background retry and leaving it there
-    is the spec's own rule; this is why the seeding is once per charge
-    and not once per tick.
-    """
-    controller, coordinator, hass = build()
-    controller.mode = controller_module.SolarMode.ACTIVE
-
-    clock = [24_000_000.0]
-    original_monotonic = controller_module.time.monotonic
-    controller_module.time.monotonic = lambda: clock[0]
-    try:
-        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
-        hass.states.set(
-            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-        )
-        asyncio.run(controller.async_tick())  # starts the below-floor timer
-
-        clock[0] += solar.STOP_DELAY_SECONDS + 1
-
-        async def _rpc_failure(serial: str, attempts: int = 8) -> dict:
-            coordinator.api_client.calls.append(("stop", serial))
-            raise api_module.ApiCommandRejectedError(
-                "unreachable", code=api_module.COMMAND_ERROR_CODE_RPC_FAILURE
-            )
-
-        coordinator.api_client.async_stop_charge = _rpc_failure
-        asyncio.run(controller.async_tick())
-
-        for _ in range(3):
-            clock[0] += solar.TICK_SECONDS
-            asyncio.run(controller.async_tick())
-    finally:
-        controller_module.time.monotonic = original_monotonic
-
-    stops = len(
-        [call for call in coordinator.api_client.calls if call[0] == "stop"]
-    )
-    assert stops == 1, f"the queued stop was re-issued: {stops} attempts"
-
-
-def test_a_charge_that_starts_later_is_seeded_in_its_turn() -> None:
-    """Once per charging episode, not once per lifetime.
-
-    A charge the user starts by hand an hour from now has also been
-    running longer than we have been watching it. If the flag never
-    reset, that charge's minimum-run clock would read as zero for ever
-    and solar control could never stop it — the mirror image of the
-    bug the seeding exists to fix.
-    """
-    controller, coordinator, _ = build(NOT_CHARGING_DATA)
-    controller.mode = controller_module.SolarMode.SIMULATE
-
-    asyncio.run(controller.async_tick())
-    assert controller._started_at is None
-
-    coordinator.data = dict(CHARGING_DATA)
-    asyncio.run(controller.async_tick())
-
-    assert controller._started_at is not None
 ```
 
-And append to `tests/test_entities.py`, before `_main`:
-
-```python
-def test_the_solar_select_restores_its_mode() -> None:
-    """The spec asks for restoration across a restart by name.
-
-    Without it every Home Assistant restart silently disarms solar
-    control: the select comes back "off", the car stops following the
-    sun, and nothing says so.
-    """
-    entity, controller = _solar_select(configured=True)
-
-    class LastState:
-        state = "active"
-
-    async def _last_state() -> Any:
-        return LastState()
-
-    entity.async_get_last_state = _last_state
-
-    asyncio.run(entity.async_added_to_hass())
-
-    assert controller.mode is not None
-    assert controller.mode.value == "active"
-```
-
-`_solar_select` is Task 7's helper. Give its double an
-`unsupported_reason` now that the select reads one:
+`_solar_select` is Task 7's helper in `tests/test_entities.py`. Give its
+double an `unsupported_reason` now that the select reads one:
 
 ```python
         @property
@@ -3707,13 +3588,265 @@ the `NOTHING` branch's log line:
 
 Add `MAX_COMMANDS_PER_HOUR` to the `from .solar import (...)` block.
 
-- [ ] **Step 8: Seed the minimum-run clock, once per charge**
+- [ ] **Step 8: Make the select read the one property**
+
+In `custom_components/daze/select.py`, replace `available`, and the
+refusal Task 7 put in `async_select_option`, with the one property.
+Both asked a narrower question — "are the sensors set?" — and the
+answer is now "is there any reason this cannot run?":
+
+```python
+    @property
+    def available(self) -> bool:
+        """Usable only where solar control could actually run."""
+        return self._controller.unsupported_reason is None
+```
+
+```python
+    async def async_select_option(self, option: str) -> None:
+        """Set the mode, refusing to arm where it cannot work.
+
+        `available` is a hint for the dashboard. A service call or an
+        automation arrives here whatever the entity reports, so the
+        refusal has to be enforced in the method that acts — and
+        raised, not logged, because the caller asked for something and
+        is entitled to know it did not happen, and why.
+        """
+        from .solar_controller import SolarMode
+
+        if option != "off":
+            reason = self._controller.unsupported_reason
+            if reason is not None:
+                raise HomeAssistantError(
+                    f"Solar control cannot be armed: {reason}."
+                )
+
+        self._controller.mode = SolarMode(option)
+        self.async_write_ha_state()
+```
+
+Turning it **off** is never refused. A control that cannot be switched
+off because the charger is in eco mode would be worse than the problem.
+
+- [ ] **Step 9: Run the tests to verify they pass**
+
+Run:
+```bash
+python3 tests/test_solar_controller.py
+python3 tests/test_entities.py
+```
+Expected: PASS, `0 failed`, with six more tests than the two files had
+before this task. The absolute count is deliberately not stated; see
+Task 5.
+
+One existing test now passes for a reason other than the one it is
+named after: `test_unknown_charging_status_does_not_assume_zero_draw`
+runs a full tick with `coordinator.data = {}`, which from this task on
+stops at "the charger has not reported yet" before it ever reads a
+sensor. Its assertion still holds, so the suite stays green. **Task 10
+moves it down a layer**; leave it alone here rather than half-fixing it
+in two places.
+
+- [ ] **Step 10: Lint and full suite**
+
+Run:
+```bash
+ruff check custom_components/daze/ tests/
+python3 tests/run_all.py
+```
+Expected: `All checks passed!`, 0 failures.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add custom_components/daze/const.py custom_components/daze/config_flow.py custom_components/daze/strings.json custom_components/daze/translations/it.json custom_components/daze/__init__.py custom_components/daze/solar_controller.py custom_components/daze/select.py tests/test_solar_controller.py tests/test_entities.py
+git commit -m "feat: refuse setups solar control cannot follow
+
+A three-phase supply feeding a single-phase charger reports surplus
+netted across phases, most of which the charger cannot reach. The Daze
+payload does not say how many phases feed the house — its one phase
+field describes the charger — so the options flow asks, with no
+default, and solar control will not arm until it is answered.
+
+One property now answers 'can this run, and if not, why not', for the
+select's availability, its refusal to arm, and the log line. Eco mode
+and a configured charger schedule are part of that answer, as the spec
+asks; previously they produced a decision of 'nothing' logged at debug
+and no other sign. Availability alone was never enough: a service call
+reaches async_select_option whatever the entity reports.
+
+The rate limit is logged at warning rather than debug. It is a backstop
+against bugs, so if it is what is holding the charger back, that is not
+a debug-level fact.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 10: Surviving a restart
+
+**Files:**
+- Modify: `custom_components/daze/solar_controller.py`
+- Modify: `custom_components/daze/select.py` (the solar select)
+- Test: `tests/test_solar_controller.py` (append before `_main`)
+- Test: `tests/test_entities.py` (append before `_main`)
+
+**Interfaces:**
+- Consumes: `SolarController` from Task 4, `DazeSolarControlSelect` from
+  Task 7, `unsupported_reason` from Task 9.
+- Produces: no new public surface. `SolarController` gains one private
+  attribute, `_charge_seeded`, and the select inherits `RestoreEntity`.
+
+On a Home Assistant restart the controller's timers begin at zero. If
+the car was already charging, an unelapsed minimum run time reads as a
+charge that has only just begun, and the select comes back `off`
+whatever the user had chosen. Both are silent: the car simply stops
+following the sun, and nothing says why.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_solar_controller.py`, before `_main`. Add
+`import time` to the file's imports if it is not already there — the
+first test reads `time.monotonic()`:
+
+```python
+def test_a_charge_already_running_counts_as_having_run() -> None:
+    """Timers start at zero after a restart. Without seeding, an
+    unelapsed minimum run time could stop a healthy charge moments
+    after boot."""
+    controller, _, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    asyncio.run(controller.async_tick())
+
+    # Assert how far back the mark was seeded, not merely that one exists.
+    # Seeding it to the present moment would satisfy "is not None" while
+    # leaving the charge unstoppable for the next ten minutes, which is the
+    # bug this seeding exists to prevent.
+    assert controller._started_at is not None
+    elapsed = time.monotonic() - controller._started_at
+    assert elapsed >= solar.MIN_RUN_SECONDS, (
+        "a charge already running must count as having served its minimum "
+        f"run time, but the mark was seeded only {elapsed:.0f}s back"
+    )
+
+
+def test_a_stop_that_could_not_be_sent_is_not_re_issued_every_tick() -> None:
+    """_carry_out clears the minimum-run clock after a stop it sent,
+    and "sent" includes one only queued for the background retry —
+    where the charger is still charging. Seeding that clock again on
+    the next tick makes decide() return STOP again, and again every
+    two minutes, until the hourly backstop trips forty minutes later.
+    Handing a stuck link to the background retry and leaving it there
+    is the spec's own rule; this is why the seeding is once per charge
+    and not once per tick.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [24_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+        hass.states.set(
+            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_tick())  # starts the below-floor timer
+
+        clock[0] += solar.STOP_DELAY_SECONDS + 1
+
+        async def _rpc_failure(serial: str, attempts: int = 8) -> dict:
+            coordinator.api_client.calls.append(("stop", serial))
+            raise api_module.ApiCommandRejectedError(
+                "unreachable", code=api_module.COMMAND_ERROR_CODE_RPC_FAILURE
+            )
+
+        coordinator.api_client.async_stop_charge = _rpc_failure
+        asyncio.run(controller.async_tick())
+
+        for _ in range(3):
+            clock[0] += solar.TICK_SECONDS
+            asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    stops = len(
+        [call for call in coordinator.api_client.calls if call[0] == "stop"]
+    )
+    assert stops == 1, f"the queued stop was re-issued: {stops} attempts"
+
+
+def test_a_charge_that_starts_later_is_seeded_in_its_turn() -> None:
+    """Once per charging episode, not once per lifetime.
+
+    A charge the user starts by hand an hour from now has also been
+    running longer than we have been watching it. If the flag never
+    reset, that charge's minimum-run clock would read as zero for ever
+    and solar control could never stop it — the mirror image of the
+    bug the seeding exists to fix.
+    """
+    controller, coordinator, _ = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.SIMULATE
+
+    asyncio.run(controller.async_tick())
+    assert controller._started_at is None
+
+    coordinator.data = dict(CHARGING_DATA)
+    asyncio.run(controller.async_tick())
+
+    assert controller._started_at is not None
+```
+
+And append to `tests/test_entities.py`, before `_main`:
+
+```python
+def test_the_solar_select_restores_its_mode() -> None:
+    """The spec asks for restoration across a restart by name.
+
+    Without it every Home Assistant restart silently disarms solar
+    control: the select comes back "off", the car stops following the
+    sun, and nothing says so.
+    """
+    entity, controller = _solar_select(configured=True)
+
+    class LastState:
+        state = "active"
+
+    async def _last_state() -> Any:
+        return LastState()
+
+    entity.async_get_last_state = _last_state
+
+    asyncio.run(entity.async_added_to_hass())
+
+    assert controller.mode is not None
+    assert controller.mode.value == "active"
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run:
+```bash
+python3 tests/test_solar_controller.py
+python3 tests/test_entities.py
+```
+Expected: the three controller tests fail on `_started_at` being `None`
+or the stop being re-issued; the select test fails with
+`AttributeError: ... 'async_get_last_state'` until `RestoreEntity` is
+inherited.
+
+- [ ] **Step 3: Seed the minimum-run clock, once per charge**
 
 Put this immediately after `self._track_thresholds(state, now, surplus)`
 and **outside** the `if self._mode is SolarMode.ACTIVE:` block that
-wraps `self._check_ignored_start(now)`. Seeding must happen in every
-mode: a `simulate` dry run of a charge that is already running has to
-preview the stop, and under the `ACTIVE` gate it would instead report
+wraps the `self._check_ignored_start(...)` call. Seeding must happen in
+every mode: a `simulate` dry run of a charge that is already running has
+to preview the stop, and under the `ACTIVE` gate it would instead report
 "the minimum run time has not elapsed" forever:
 
 ```python
@@ -3760,7 +3893,7 @@ The inner `if self._started_at is None` is what protects a start this
 controller issued: `_carry_out` has already set the real time, and this
 must not overwrite it with one ten minutes in the past.
 
-- [ ] **Step 9: Make the select remember its mode**
+- [ ] **Step 4: Make the select remember its mode**
 
 In `custom_components/daze/select.py`, change `DazeSolarControlSelect` to
 also inherit `RestoreEntity`:
@@ -3787,67 +3920,35 @@ And restore in `async_added_to_hass`, after the existing `super()` call:
             self._controller.mode = SolarMode(last.state)
 ```
 
-Also replace `available`, and the refusal Task 7 put in
-`async_select_option`, with the one property. Both asked a narrower
-question — "are the sensors set?" — and the answer is now "is there any
-reason this cannot run?":
+Restoring writes straight to the controller rather than through
+`async_select_option`, so it cannot raise at startup: a setup that is
+temporarily unsupported — the charger has not polled yet, say — must
+come back as the user left it and be refused later by the guard in the
+tick, not lose the setting because of a race with the first refresh.
 
-```python
-    @property
-    def available(self) -> bool:
-        """Usable only where solar control could actually run."""
-        return self._controller.unsupported_reason is None
-```
+- [ ] **Step 5: Move one test back to the layer it tests**
 
-```python
-    async def async_select_option(self, option: str) -> None:
-        """Set the mode, refusing to arm where it cannot work.
+`test_unknown_charging_status_does_not_assume_zero_draw` runs a full
+tick with `coordinator.data = {}`. Since Task 9 that tick stops at "the
+charger has not reported yet", before it ever reads a sensor, so the
+test passes for a reason that has nothing to do with the unknown car
+draw it is named after. Call `controller._read_surplus()` directly and
+assert that it returns `None`, the same way
+`test_no_coordinator_data_reads_as_not_reachable` already tests its own
+layer.
 
-        `available` is a hint for the dashboard. A service call or an
-        automation arrives here whatever the entity reports, so the
-        refusal has to be enforced in the method that acts — and
-        raised, not logged, because the caller asked for something and
-        is entitled to know it did not happen, and why.
-        """
-        from .solar_controller import SolarMode
-
-        if option != "off":
-            reason = self._controller.unsupported_reason
-            if reason is not None:
-                raise HomeAssistantError(
-                    f"Solar control cannot be armed: {reason}."
-                )
-
-        self._controller.mode = SolarMode(option)
-        self.async_write_ha_state()
-```
-
-Turning it **off** is never refused. A control that cannot be switched
-off because the charger is in eco mode would be worse than the problem.
-
-- [ ] **Step 10: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run:
 ```bash
 python3 tests/test_solar_controller.py
 python3 tests/test_entities.py
 ```
-Expected: PASS, `0 failed`, with nine more tests than the two files had
+Expected: PASS, `0 failed`, with four more tests than the two files had
 before this task. The absolute count is deliberately not stated; see
 Task 5.
 
-One existing test changes meaning and should be moved down a layer
-while you are here:
-`test_unknown_charging_status_does_not_assume_zero_draw` runs a full
-tick with `coordinator.data = {}`, which now stops at "the charger has
-not reported yet" before it ever reads a sensor. Its assertion still
-passes, for a reason that has nothing to do with what it is named
-after. Call `controller._read_surplus()` directly instead and assert
-that it returns `None`, the same way
-`test_no_coordinator_data_reads_as_not_reachable` already tests its
-own layer.
-
-- [ ] **Step 11: Lint and full suite**
+- [ ] **Step 7: Lint and full suite**
 
 Run:
 ```bash
@@ -3856,30 +3957,23 @@ python3 tests/run_all.py
 ```
 Expected: `All checks passed!`, 0 failures.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add custom_components/daze/const.py custom_components/daze/config_flow.py custom_components/daze/strings.json custom_components/daze/translations/it.json custom_components/daze/__init__.py custom_components/daze/solar_controller.py custom_components/daze/select.py tests/test_solar_controller.py tests/test_entities.py
-git commit -m "feat: refuse setups solar control cannot follow, survive a restart
+git add custom_components/daze/solar_controller.py custom_components/daze/select.py tests/test_solar_controller.py tests/test_entities.py
+git commit -m "feat: survive a Home Assistant restart
 
-A three-phase supply feeding a single-phase charger reports surplus
-netted across phases, most of which the charger cannot reach. The Daze
-payload does not say how many phases feed the house — its one phase
-field describes the charger — so the options flow asks, with no
-default, and solar control will not arm until it is answered.
+Timers begin at zero after a restart, so a charge that was already
+running would read as having no elapsed run time and could be stopped
+moments after boot. A running charge now seeds its own start time.
 
-One property now answers 'can this run, and if not, why not', for the
-select's availability, its refusal to arm, the log line and the docs.
-Eco mode and a configured charger schedule are part of that answer, as
-the spec asks; previously they produced a decision of 'nothing' logged
-at debug and no other sign.
-
-Timers begin at zero after a Home Assistant restart, so a charge that
-was already running would read as having no elapsed run time and could
-be stopped moments after boot. A running charge now seeds its own
-start time, once per charge rather than once per tick: re-seeding it
-after a stop that was queued but never landed would re-issue that stop
-every two minutes until the hourly backstop tripped.
+Once per charge rather than once per tick, and released when the charge
+is observed to end. Re-seeding on every tick would re-issue a stop that
+was queued but never landed, every two minutes until the hourly
+backstop tripped; seeding only once per lifetime would strand the next
+charge instead, with a clock that reads as zero for ever and can never
+be stopped. This clock has now been wrong in both directions, which is
+why it is tested in both.
 
 The control also remembers its mode across a restart.
 
@@ -3887,7 +3981,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
 ---
-### Task 10: Documentation
+### Task 11: Documentation
 
 **Files:**
 - Modify: `README.md`
@@ -3895,8 +3989,9 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Modify: `custom_components/daze/manifest.json`
 
 **Interfaces:**
-- Consumes: the entity names from Task 7 and the refusals from Task 9.
-- Produces: nothing code depends on.
+- Consumes: the entity names from Task 7, the refusals from Task 9, and
+  the restored mode from Task 10.
+- Produces: nothing code depends on. This is the last task.
 
 - [ ] **Step 1: Document the entities in the README**
 

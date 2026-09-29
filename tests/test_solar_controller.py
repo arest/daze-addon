@@ -946,7 +946,7 @@ def test_a_queued_start_does_not_arm_the_draw_grace_clock() -> None:
 
 def test_a_charge_not_issued_by_us_does_not_arm_the_backoff() -> None:
     """_started_at, the minimum-run clock, can be seeded from a charge
-    already running when the controller starts (Task 9 does this at
+    already running when the controller starts (Task 10 does this at
     boot, so a healthy charge is not stopped moments after restart).
     That charge was never issued by us, so a car sitting at 0 W must
     not be judged against a start that never happened — only
@@ -958,7 +958,7 @@ def test_a_charge_not_issued_by_us_does_not_arm_the_backoff() -> None:
     controller, _, _ = build(data)
     controller.mode = controller_module.SolarMode.ACTIVE
 
-    # Simulate Task 9's boot-time seeding of the minimum-run clock
+    # Simulate Task 10's boot-time seeding of the minimum-run clock
     # from an already-running charge, with no start of ours behind it.
     controller._started_at = 0.0
     assert controller._start_issued_at is None

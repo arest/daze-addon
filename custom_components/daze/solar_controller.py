@@ -134,7 +134,7 @@ class SolarController:
         self._below_since: float | None = None
         # The minimum-run clock: how long ago the current charge
         # began, consumed by decide() via seconds_since_start. Not
-        # necessarily a start this controller issued — Task 9 seeds
+        # necessarily a start this controller issued — Task 10 seeds
         # this from a charge already running when the controller
         # starts, so a healthy charge is not stopped moments after
         # boot. Because of that, this must stay agnostic to who or
@@ -464,7 +464,7 @@ class SolarController:
         is the minimum-run clock ``decide()`` consumes, and can be
         seeded from a charge the controller did not itself start (a
         charge already running when Home Assistant restarts — see
-        Task 9). Judging that against a start that never happened
+        Task 10). Judging that against a start that never happened
         would arm an hour-long back-off on a perfectly healthy charge
         the moment it passes through the wait-for-EV state every
         start goes through. Only a start this method's own caller
