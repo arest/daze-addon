@@ -21,6 +21,7 @@ from .const import (
     CONF_SERIAL_NUMBER,
     CONF_SOFTWARE_VERSION,
     CONF_SOLAR_RESERVE,
+    CONF_SUPPLY_PHASES,
     DEFAULT_SOLAR_RESERVE,
     DOMAIN,
     PLATFORMS,
@@ -81,6 +82,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         reserve_w=entry.options.get(
             CONF_SOLAR_RESERVE, DEFAULT_SOLAR_RESERVE
         ),
+        supply_phases=entry.options.get(CONF_SUPPLY_PHASES),
     )
     # The entities reach the controller through the coordinator, which
     # every one of them already holds.

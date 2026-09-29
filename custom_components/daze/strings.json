@@ -162,8 +162,20 @@
         "data": {
           "poll_interval": "Polling interval (seconds)",
           "grid_import_sensor": "Grid import power sensor",
-          "grid_export_sensor": "Grid export power sensor"
+          "grid_export_sensor": "Grid export power sensor",
+          "supply_phases": "Grid supply"
+        },
+        "data_description": {
+          "supply_phases": "How many phases feed the house, not the charger. A three-phase meter reports surplus added up across all three, and a single-phase charger can only use one of them, so solar control will not arm until this is set."
         }
+      }
+    }
+  },
+  "selector": {
+    "supply_phases": {
+      "options": {
+        "single": "Single-phase",
+        "three": "Three-phase"
       }
     }
   }

@@ -300,8 +300,8 @@ class DazeSolarControlSelect(
 
     @property
     def available(self) -> bool:
-        """Only usable once both grid sensors have been chosen."""
-        return bool(self._controller.configured)
+        """Usable only where solar control could actually run."""
+        return self._controller.unsupported_reason is None
 
     @property
     def current_option(self) -> str | None:
@@ -320,23 +320,22 @@ class DazeSolarControlSelect(
         }
 
     async def async_select_option(self, option: str) -> None:
-        """Set the mode, refusing to arm before it can work.
+        """Set the mode, refusing to arm where it cannot work.
 
         `available` is a hint for the dashboard. A service call or an
         automation arrives here whatever the entity reports, so the
-        rule that both grid sensors are required before solar control
-        leaves "off" has to be enforced in the method that acts — and
+        refusal has to be enforced in the method that acts — and
         raised, not logged, because the caller asked for something and
-        is entitled to know it did not happen.
+        is entitled to know it did not happen, and why.
         """
         from .solar_controller import SolarMode
 
-        if option != "off" and not self._controller.configured:
-            raise HomeAssistantError(
-                "Solar control needs both a grid import and a grid "
-                "export sensor before it can be armed. Set them in the "
-                "integration's options."
-            )
+        if option != "off":
+            reason = self._controller.unsupported_reason
+            if reason is not None:
+                raise HomeAssistantError(
+                    f"Solar control cannot be armed: {reason}."
+                )
 
         self._controller.mode = SolarMode(option)
         self.async_write_ha_state()

@@ -220,8 +220,16 @@ NOT_CHARGING_DATA: dict[str, Any] = {
 }
 
 
-def build(data: dict[str, Any] | None = None) -> tuple[Any, Any, Any]:
-    """Build a controller wired to stubs."""
+def build(
+    data: dict[str, Any] | None = None,
+    supply_phases: str | None = "single",
+) -> tuple[Any, Any, Any]:
+    """Build a controller wired to stubs.
+
+    Declares a single-phase supply unless a test says otherwise: that
+    is the ordinary installation, and the alternatives each have a test
+    of their own below.
+    """
     hass = StubHass()
     hass.states.set(
         "sensor.grid_import", "0", {"unit_of_measurement": "W"}
@@ -236,6 +244,7 @@ def build(data: dict[str, Any] | None = None) -> tuple[Any, Any, Any]:
         coordinator=coordinator,
         import_entity="sensor.grid_import",
         export_entity="sensor.grid_export",
+        supply_phases=supply_phases,
     )
     return controller, coordinator, hass
 
@@ -1784,6 +1793,68 @@ def test_a_blind_tick_does_not_reset_the_fast_paths_spacing_clock() -> None:
         )
     finally:
         controller_module.time.monotonic = original_monotonic
+
+
+def test_an_undeclared_supply_refuses_to_run() -> None:
+    """The Daze payload cannot tell us how many phases feed the house,
+    so the user is asked. Until they answer, an unanswered question is
+    not evidence of a single-phase supply: guessing wrong loads one
+    phase with the whole of a netted three-phase surplus.
+    """
+    controller, _, _ = build(supply_phases=None)
+
+    assert controller.unsupported_reason is not None
+    assert "phase" in controller.unsupported_reason
+
+
+def test_three_phase_supply_with_a_single_phase_charger_is_refused() -> None:
+    """Grid meters usually report net across phases, so the surplus
+    can exist mostly on phases the charger cannot reach."""
+    data = dict(CHARGING_DATA)
+    data["evseIsThreePhase"] = False
+    controller, _, _ = build(data, supply_phases="three")
+
+    assert controller.unsupported_reason is not None
+    assert "phase" in controller.unsupported_reason
+
+
+def test_a_matched_single_phase_pair_is_supported() -> None:
+    data = dict(CHARGING_DATA)
+    data["evseIsThreePhase"] = False
+    controller, _, _ = build(data, supply_phases="single")
+
+    assert controller.unsupported_reason is None
+
+
+def test_a_three_phase_charger_on_a_three_phase_supply_is_supported() -> None:
+    """The refusal is about the mismatch, not about three phases."""
+    data = dict(CHARGING_DATA)
+    data["evseIsThreePhase"] = True
+    controller, _, _ = build(data, supply_phases="three")
+
+    assert controller.unsupported_reason is None
+
+
+def test_eco_mode_refuses_to_arm() -> None:
+    """The spec asks for this three times: the charger's own eco mode
+    is controlling it, so solar control stands down and says so rather
+    than quietly deciding nothing every two minutes for ever.
+    """
+    data = dict(CHARGING_DATA)
+    data["ecoModeEnabled"] = True
+    controller, _, _ = build(data)
+
+    assert controller.unsupported_reason is not None
+    assert "eco" in controller.unsupported_reason
+
+
+def test_a_charger_schedule_refuses_to_arm() -> None:
+    data = dict(CHARGING_DATA)
+    data["schedules"] = [{"id": 1}]
+    controller, _, _ = build(data)
+
+    assert controller.unsupported_reason is not None
+    assert "schedule" in controller.unsupported_reason
 
 
 def _main() -> int:

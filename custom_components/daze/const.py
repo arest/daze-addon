@@ -51,6 +51,16 @@ MAX_POLL_INTERVAL = 600  # seconds
 CONF_GRID_IMPORT_SENSOR = "grid_import_sensor"
 CONF_GRID_EXPORT_SENSOR = "grid_export_sensor"
 
+# How many phases feed the house. Declared by the user, because the
+# Daze payload does not say: its only phase field, evseIsThreePhase,
+# describes the charger, and payload.min_charging_current already reads
+# it that way. There is deliberately no default — a three-phase meter
+# reports surplus netted across phases, and following it with a
+# single-phase charger loads the one phase the charger is on.
+CONF_SUPPLY_PHASES = "supply_phases"
+SUPPLY_PHASES_SINGLE = "single"
+SUPPLY_PHASES_THREE = "three"
+
 # Watts to leave for the house before the car gets any. Site-specific,
 # so it is an entity rather than a constant; this is only its default.
 CONF_SOLAR_RESERVE = "solar_reserve"

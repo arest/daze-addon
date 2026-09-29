@@ -32,10 +32,13 @@ from .const import (
     CONF_REFRESH_TOKEN,
     CONF_SERIAL_NUMBER,
     CONF_SOFTWARE_VERSION,
+    CONF_SUPPLY_PHASES,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
     MAX_POLL_INTERVAL,
     MIN_POLL_INTERVAL,
+    SUPPLY_PHASES_SINGLE,
+    SUPPLY_PHASES_THREE,
 )
 from .payload import device_name
 
@@ -417,6 +420,21 @@ class DazeOptionsFlowHandler(OptionsFlow):
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(
                         domain="sensor", device_class="power"
+                    )
+                ),
+                # Optional so the form can still be saved without it,
+                # not because it has a default: solar control refuses
+                # to arm until it is answered.
+                vol.Optional(
+                    CONF_SUPPLY_PHASES,
+                    description={
+                        "suggested_value": options.get(CONF_SUPPLY_PHASES)
+                    },
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[SUPPLY_PHASES_SINGLE, SUPPLY_PHASES_THREE],
+                        translation_key="supply_phases",
+                        mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
             }

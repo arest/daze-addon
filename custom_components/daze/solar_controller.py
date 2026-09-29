@@ -32,6 +32,7 @@ from .api import (
     ApiCommandRejectedError,
     ApiError,
 )
+from .const import SUPPLY_PHASES_SINGLE, SUPPLY_PHASES_THREE
 from .payload import (
     charger_offline_reason,
     is_charge_enabled,
@@ -43,6 +44,7 @@ from .payload import (
 from .solar import (
     DRAW_GRACE_SECONDS,
     IGNORED_START_BACKOFF_SECONDS,
+    MAX_COMMANDS_PER_HOUR,
     MIN_MEANINGFUL_DRAW_W,
     TICK_SECONDS,
     SolarAction,
@@ -107,6 +109,7 @@ class SolarController:
         import_entity: str | None,
         export_entity: str | None,
         reserve_w: float = 0.0,
+        supply_phases: str | None = None,
     ) -> None:
         """Initialise in the off state.
 
@@ -124,12 +127,17 @@ class SolarController:
                 memory: a reserve that returns to zero on every restart
                 gives the car everything the house was keeping, and
                 does it silently.
+            supply_phases: "single", "three", or None if the user has
+                not said. None refuses to arm rather than assuming:
+                the payload cannot tell us, and the wrong guess loads
+                one phase with a surplus measured across three.
 
         """
         self._hass = hass
         self._coordinator = coordinator
         self._import_entity = import_entity
         self._export_entity = export_entity
+        self._supply_phases = supply_phases
 
         self._mode = SolarMode.OFF
         self._reserve_w = max(0.0, float(reserve_w))
@@ -165,6 +173,7 @@ class SolarController:
         self._backoff_until: float = 0.0
         self._command_times: list[float] = []
         self._sensor_warning_logged = False
+        self._unsupported_warning_logged = False
 
     # ------------------------------------------------------------------
     # Public surface
@@ -244,6 +253,55 @@ class SolarController:
     def configured(self) -> bool:
         """Whether both grid sensors have been chosen."""
         return bool(self._import_entity and self._export_entity)
+
+    @property
+    def unsupported_reason(self) -> str | None:
+        """Explain why solar control cannot run here, if it cannot.
+
+        One property with one answer, because every caller needs the
+        same one: the select for its availability and for refusing to
+        arm, the tick to stand down, the log line, and the README. The
+        spec asks three separate times for a refusal that explains
+        itself, and a boolean cannot.
+
+        Ordered cheapest and most fundamental first, so the message a
+        user sees names the thing they have to fix.
+        """
+        if not self.configured:
+            return (
+                "both a grid import and a grid export sensor have to be "
+                "chosen in the integration's options"
+            )
+
+        if self._supply_phases not in (
+            SUPPLY_PHASES_SINGLE,
+            SUPPLY_PHASES_THREE,
+        ):
+            return (
+                "the number of phases feeding the house has not been set "
+                "in the integration's options, and it cannot be read from "
+                "the charger"
+            )
+
+        data = self._coordinator.data
+        if not data:
+            return "the charger has not reported yet"
+
+        if self._supply_phases == SUPPLY_PHASES_THREE and not bool(
+            data.get("evseIsThreePhase")
+        ):
+            return (
+                "the supply is three-phase and the charger is single-phase, "
+                "so exported power may be on a phase it cannot use"
+            )
+
+        if data.get("ecoModeEnabled"):
+            return "the charger's own eco mode is controlling it"
+
+        if data.get("schedules"):
+            return "the charger has a schedule set"
+
+        return None
 
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Register a callback for state changes.
@@ -335,6 +393,15 @@ class SolarController:
         if self._mode is SolarMode.OFF:
             return
 
+        unsupported = self.unsupported_reason
+        if unsupported is not None:
+            if not self._unsupported_warning_logged:
+                self._unsupported_warning_logged = True
+                _LOGGER.warning("Solar control cannot run: %s", unsupported)
+            return
+
+        self._unsupported_warning_logged = False
+
         now = time.monotonic()
         surplus = self._read_surplus()
 
@@ -389,7 +456,13 @@ class SolarController:
         self._last_decision = decision
 
         if decision.action is SolarAction.NOTHING:
-            _LOGGER.debug("Solar control: %s", decision.reason)
+            if state.commands_this_hour >= MAX_COMMANDS_PER_HOUR:
+                # The backstop is against bugs. If it is what is
+                # holding the charger back, something upstream is
+                # wrong and the log has to say so out loud.
+                _LOGGER.warning("Solar control: %s", decision.reason)
+            else:
+                _LOGGER.debug("Solar control: %s", decision.reason)
             self._notify()
             return
 

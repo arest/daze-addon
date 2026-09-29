@@ -1238,6 +1238,12 @@ def _solar_select(configured: bool = False) -> tuple[Any, Any]:
         def add_listener(self, cb):
             return lambda: None
 
+        @property
+        def unsupported_reason(self):
+            if not self.configured:
+                return "no grid sensors have been chosen"
+            return None
+
     controller = Ctl()
     entity = select_mod.DazeSolarControlSelect(
         coordinator=FakeCoordinator(dict(BASE_DATA)),

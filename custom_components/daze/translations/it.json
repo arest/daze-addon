@@ -169,8 +169,20 @@
         "data": {
           "poll_interval": "Intervallo di aggiornamento (secondi)",
           "grid_import_sensor": "Sensore di potenza prelevata dalla rete",
-          "grid_export_sensor": "Sensore di potenza immessa in rete"
+          "grid_export_sensor": "Sensore di potenza immessa in rete",
+          "supply_phases": "Alimentazione di rete"
+        },
+        "data_description": {
+          "supply_phases": "Quante fasi alimentano la casa, non il caricatore. Un contatore trifase riporta il surplus sommato sulle tre fasi e un caricatore monofase può usarne solo una, quindi il controllo solare non si attiva finché non è impostato."
         }
+      }
+    }
+  },
+  "selector": {
+    "supply_phases": {
+      "options": {
+        "single": "Monofase",
+        "three": "Trifase"
       }
     }
   }
