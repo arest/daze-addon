@@ -56,6 +56,16 @@ rather than restated.
   following it would overload one. Rather than be quietly wrong, solar
   control refuses to arm in that combination; see Error handling.
 
+  The supply is **declared by the user, not detected.** The Daze
+  payload has one phase field, `evseIsThreePhase`, and it describes the
+  charger — `payload.min_charging_current` already reads it that way to
+  derive the current floor. Nothing in the payload describes the supply
+  feeding the charger, so the options flow asks, with no default. Until
+  it is answered solar control refuses to arm: an unanswered question
+  is not evidence of a single-phase supply, and the guess that costs
+  something is the one that follows a netted three-phase figure with a
+  single-phase charger.
+
 ---
 
 ## Architecture
@@ -95,10 +105,22 @@ That makes the manual-override rule mechanical: any call arriving at
 `async_set_native_value` is by definition external, so solar mode
 disarms. There is no "was that me?" flag to get wrong.
 
+The same rule covers the charge control switch and the start, stop and
+set-current services, for the same mechanical reason: solar control
+reaches the charger only through the API client, so a command arriving
+at an entity or a service did not come from it. Without that, a user
+pressing Stop is overruled by the next tick, which sees a connected car
+and unchanged surplus and starts the charge again.
+
 A consequence worth stating plainly: a user's **own automation**
 calling `number.set_value` also disarms solar mode. This is intended —
 an automation is external control — but it is surprising if
 undocumented.
+
+Disarming clears the episode's clocks as well as the mode. A start
+solar control issued is no longer its business once someone else has
+taken over, and a draw-grace or back-off mark left behind is read
+against a different situation hours later.
 
 ### Entities
 
@@ -118,14 +140,20 @@ The select restores its state across restarts, and defaults to
 
 ### Configuration
 
-The existing options flow gains two entity pickers: the grid import
-sensor and the grid export sensor. Both are required before solar
-control can leave `off`.
+The existing options flow gains two entity pickers — the grid import
+sensor and the grid export sensor — and one question: is the grid
+supply single-phase or three-phase? All three are required before solar
+control can leave `off`, and that requirement is enforced where it can
+be explained, in the control that arms it, rather than by making the
+fields mandatory in a form the user may be opening for another reason.
 
 Timings are constants rather than options. They are derived from
 measured charger behaviour, not preference, and exposing them invites
 misconfiguration of a feature that drives hardware. The reserve is the
-one genuinely site-specific value, so it is an entity.
+one genuinely site-specific value, so it is an entity — stored in the
+config entry's options as the entity is written, because a reserve held
+only in memory returns to 0 W on every restart, and 0 W means the house
+gets nothing before the car does.
 
 ---
 
@@ -173,12 +201,28 @@ resulting errors blamed the cloud service rather than the power supply.
 
 ### Asymmetric timing
 
-A drop below the floor is evaluated **immediately** on a sensor update,
-bypassing the tick. Everything else waits for the next tick.
+A drop below the floor is noticed **immediately** on a sensor update,
+and it is the drop itself that starts the stop delay. Everything else
+waits for the next tick.
 
 Unused cheap power costs nothing; imported expensive power is exactly
-what pure-solar mode exists to avoid. A fixed tick would import for up
-to two minutes after every collapse.
+what pure-solar mode exists to avoid.
+
+The figure that decides *what to do* is the smoothed one, and it is
+minutes behind a real collapse: a five-minute average of a supply that
+has just fallen to nothing takes several samples to admit it. The stop
+delay is ten minutes from the moment the surplus was last above the
+floor — so if that moment is taken from the average rather than from
+the reading, those minutes are added to the ten, and the car imports at
+up to the charger's ceiling throughout. Taking it from the raw reading
+is worth about four minutes of avoided import per collapse.
+
+What this is *not* is a way to stop sooner than the stop delay. Running
+the decision early saves at most one tick, and a fast path that runs on
+every sensor update costs far more than it saves: the tick is the only
+thing bounding how often the charger is written to, so anything
+bypassing it needs a latch of its own — once per collapse, and never
+more often than the tick would have run.
 
 ### The car that will not draw
 
@@ -205,6 +249,14 @@ Timers are therefore seeded from observed state rather than zero: a
 charger already charging at startup is treated as having satisfied its
 minimum run time, and surplus timers begin accumulating from the first
 reading rather than assuming the threshold was only just crossed.
+
+Once per charge, though, not on every cycle. The minimum-run clock is
+also cleared when a stop is issued, and a stop can be accepted for
+retry without reaching the charger; seeding it again on the next cycle
+would re-issue that stop, and keep re-issuing it. The mark is seeded
+when a charge is first observed and released when the charge is
+observed to end, so the next charge — including one started by hand —
+is seeded in its turn.
 
 ### Constants
 
@@ -234,7 +286,8 @@ reading rather than assuming the threshold was only just crossed.
 | Command still pending | Skip the cycle entirely |
 | Vendor eco mode enabled | Refuse to arm; explain why |
 | Charger schedule configured | Refuse to arm; explain why |
-| Three-phase supply, single-phase charger | Refuse to arm; explain why |
+| Three-phase supply (declared), single-phase charger | Refuse to arm; explain why |
+| Supply phase count not declared | Refuse to arm; ask for it. Not detectable from the payload |
 | Car does not draw after a start | Back off; do not retry until the interval expires |
 | Rate limit reached | Skip, log at warning, resume next hour |
 

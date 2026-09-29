@@ -15,7 +15,11 @@
 - **Version:** set `manifest.json` to `"version": "0.2.0"` in the final
   documentation task, and nowhere else. No other task touches it. The
   maintainer chose this number; do not invent a different one.
-- **Deploying is `git push`.** There is no separate copy step. Push `main` and force-push the `v0.1.6` tag together, since the tag tracks `main`.
+- **No task publishes.** This work lands on the `solar-control` branch.
+  Merging it and moving the release tag is the operator's step, after
+  review, and `main` is several tasks behind the branch while the plan
+  runs: a push from inside a task would publish a release without the
+  feature in it. Commit; do not push, tag or force-push.
 - **Every commit message ends with the attribution line your own session
   specifies.** Do not copy a model name from this plan: a subagent running
   a different model attributes to that model, which is accurate.
@@ -1776,11 +1780,25 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `custom_components/daze/__init__.py`
 - Modify: `custom_components/daze/number.py` (the two existing limit entities)
+- Modify: `custom_components/daze/switch.py` (the charge control switch)
+- Modify: `custom_components/daze/coordinator.py` (declare the attribute)
+- Modify: `custom_components/daze/solar_controller.py` (add `disarm`, accept a reserve)
 - Test: `tests/test_entities.py` (append before `_main`)
+- Test: `tests/test_solar_controller.py` (append before `_main`)
 
 **Interfaces:**
-- Consumes: `SolarController`, `SolarMode` from Task 4.
-- Produces: `hass.data[DOMAIN][entry.entry_id]["solar_controller"]`
+- Consumes: `SolarController`, `SolarMode` from Task 4, and
+  `CONF_GRID_IMPORT_SENSOR`, `CONF_GRID_EXPORT_SENSOR`,
+  `CONF_SOLAR_RESERVE`, `DEFAULT_SOLAR_RESERVE` from Task 3.
+- Produces:
+  - `hass.data[DOMAIN][entry.entry_id]["solar_controller"]`
+  - `SolarController.disarm(reason)`
+  - `SolarController(..., reserve_w=...)`: the reserve arrives from the
+    entry's options rather than starting at zero every time.
+  - `DazeDataUpdateCoordinator.solar_controller`, declared on the class
+    so every entity and service can read it without `getattr`.
+  - `_reload_signature(entry)` in `__init__.py`, so that writing the
+    reserve back to the options does not reload the entry.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1809,12 +1827,86 @@ def test_a_manual_limit_change_disarms_solar_control() -> None:
     asyncio.run(entity.async_set_native_value(16000))
 
     assert coordinator.solar_controller.disarmed is True
+
+
+def test_a_manual_charge_toggle_disarms_solar_control() -> None:
+    """The switch is a control too.
+
+    Without this the user presses the toggle, and the next tick — at
+    most two minutes later — sees a connected car and sustained surplus
+    and commands the opposite. Solar control would be fighting the
+    person holding the button.
+    """
+    class Ctl:
+        disarmed = False
+
+        def disarm(self, reason: str) -> None:
+            self.disarmed = True
+
+    coordinator = FakeCoordinator(dict(BASE_DATA))
+    coordinator.solar_controller = Ctl()
+    client = FakeApi()
+
+    switch_module = sys.modules["daze_entities_under_test.switch"]
+    entity = switch_module.DazeWallboxSwitchEntity(
+        coordinator=coordinator, api_client=client,
+        serial_number="SER1", device_info={},
+    )
+
+    asyncio.run(entity.async_turn_on())
+
+    assert coordinator.solar_controller.disarmed is True
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+And append to `tests/test_solar_controller.py`, before `_main`:
 
-Run: `python3 tests/test_entities.py`
-Expected: FAIL on `assert ... .disarmed is True`
+```python
+def test_disarming_clears_the_clocks_a_rearm_would_misread() -> None:
+    """Disarming ends the episode, not just the mode.
+
+    A start this controller issued, and the back-off that start could
+    still arm, must not survive into the next time solar control is
+    switched on. Left behind, a start issued at noon and abandoned at
+    12:01 is judged at 14:00 against a car that has long since
+    finished, arming a 60-minute back-off for a start nobody is
+    waiting on.
+    """
+    controller, _, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+    controller._start_issued_at = 100.0
+    controller._backoff_until = 1e9
+    controller._started_at = 100.0
+
+    controller.disarm("the charging limit was set manually")
+
+    assert controller.mode is controller_module.SolarMode.OFF
+    assert controller._start_issued_at is None
+    assert controller._backoff_until == 0.0
+    assert controller._started_at is None
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run:
+```bash
+python3 tests/test_entities.py
+python3 tests/test_solar_controller.py
+```
+Expected: FAIL on `assert ... .disarmed is True`, and
+`AttributeError: 'SolarController' object has no attribute 'disarm'`.
+
+Step 5 declares `solar_controller` on the real coordinator, so
+`FakeCoordinator` in `tests/test_entities.py` has to mirror it or every
+existing test that sets a value raises `AttributeError` from the new
+helper. Add one line to its `__init__`:
+
+```python
+        # Mirrors the real coordinator, which declares this so entities
+        # and services can read it without getattr.
+        self.solar_controller: Any = None
+```
+
+The two tests above then overwrite it with their own double.
 
 - [ ] **Step 3: Add `disarm` to the controller**
 
@@ -1826,6 +1918,14 @@ In `custom_components/daze/solar_controller.py`, add to `SolarController`:
 
         Called when a limit change arrives through an entity or a
         service, which by construction means it did not come from here.
+
+        Every clock of the episode goes with the mode, not just the two
+        threshold timers. A start this controller issued is no longer
+        ours to judge the car against: left set, _start_issued_at is
+        read hours later, against a car that has long since finished,
+        and arms a 60-minute back-off for a start nobody is waiting on.
+        A back-off already armed goes too — it was armed to stop this
+        controller retrying, and the user has just taken over anyway.
         """
         if self._mode is SolarMode.OFF:
             return
@@ -1834,10 +1934,23 @@ In `custom_components/daze/solar_controller.py`, add to `SolarController`:
         self._mode = SolarMode.OFF
         self._above_since = None
         self._below_since = None
+        self._collapsed_since = None
+        self._started_at = None
+        self._start_issued_at = None
+        self._backoff_until = 0.0
         self._notify()
 ```
 
-- [ ] **Step 4: Call it from the limit entities**
+`_collapsed_since` is Task 8's; if Task 8 has not run yet, leave that
+line out and Task 8 will add it with the attribute.
+
+Clearing `_started_at` here is safe because Task 9 seeds it again from
+an observed charge, once per charging episode. If Task 9's seeding is
+ever removed, this line must go with it, or a charge still running when
+solar control is re-armed can never be stopped: `_elapsed(None)` is
+`0.0`, which reads as "just started" for ever.
+
+- [ ] **Step 4: Call it from the controls**
 
 In `custom_components/daze/number.py`, add this helper to both `DazeWallboxNumberEntity` and `DazeWallboxPowerEntity`:
 
@@ -1848,14 +1961,75 @@ In `custom_components/daze/number.py`, add this helper to both `DazeWallboxNumbe
         Solar control writes through the API client, so anything
         arriving here came from a person or their automation.
         """
-        controller = getattr(self.coordinator, "solar_controller", None)
+        controller = self.coordinator.solar_controller
         if controller is not None:
             controller.disarm("the charging limit was set manually")
 ```
 
-Call `self._disarm_solar()` in both `async_set_native_value` methods, immediately after the no-op guard returns and before the offline check.
+Call `self._disarm_solar()` in both `async_set_native_value` methods, immediately after the no-op guard returns and before the validation check. Before validation rather than after, so that a value the charger would reject still counts as the user taking over: they have expressed the intent either way, and solar control writing the limit a second later is exactly what the rule exists to prevent.
 
-- [ ] **Step 5: Create and tear down the controller**
+In `custom_components/daze/switch.py`, add the same helper to `DazeWallboxSwitchEntity`, worded for what it controls:
+
+```python
+    def _disarm_solar(self) -> None:
+        """Hand control back to the user.
+
+        Solar control starts and stops the charge through the API
+        client, so a toggle arriving here came from a person or their
+        automation. Without this the next tick reverses them: the car
+        is connected and the surplus is unchanged, so decide() returns
+        the opposite command within two minutes.
+        """
+        controller = self.coordinator.solar_controller
+        if controller is not None:
+            controller.disarm("charging was started or stopped manually")
+```
+
+Call `self._disarm_solar()` in both `async_turn_on` and `async_turn_off`, immediately after the idempotent no-op guard returns and before the offline check.
+
+- [ ] **Step 5: Let the controller be told its reserve**
+
+In `custom_components/daze/solar_controller.py`, add a keyword to
+`SolarController.__init__` and use it instead of the hardcoded zero:
+
+```python
+        import_entity: str | None,
+        export_entity: str | None,
+        reserve_w: float = 0.0,
+```
+
+and, in the body, replace `self._reserve_w = 0.0` with:
+
+```python
+        self._reserve_w = max(0.0, float(reserve_w))
+```
+
+Document the keyword in the docstring's `Args:` block:
+
+```python
+            reserve_w: Watts to leave for the house, restored from the
+                config entry's options. Held there rather than only in
+                memory: a reserve that returns to zero on every restart
+                gives the car everything the house was keeping, and
+                does it silently.
+```
+
+- [ ] **Step 6: Declare the attribute on the coordinator**
+
+In `custom_components/daze/coordinator.py`, add to
+`DazeDataUpdateCoordinator.__init__`, beside the other state:
+
+```python
+        # Set by async_setup_entry. Declared here so every entity and
+        # service can read it directly: a getattr default would turn a
+        # wiring mistake into silent no-disarm, which is the failure
+        # this whole mechanism exists to prevent.
+        self.solar_controller: Any = None
+```
+
+`Any` is already imported in `coordinator.py`.
+
+- [ ] **Step 7: Create and tear down the controller**
 
 In `custom_components/daze/__init__.py`, inside `async_setup_entry`, after the coordinator is created and before `hass.data[DOMAIN][entry.entry_id] = {...}`:
 
@@ -1865,6 +2039,9 @@ In `custom_components/daze/__init__.py`, inside `async_setup_entry`, after the c
         coordinator=coordinator,
         import_entity=entry.options.get(CONF_GRID_IMPORT_SENSOR),
         export_entity=entry.options.get(CONF_GRID_EXPORT_SENSOR),
+        reserve_w=entry.options.get(
+            CONF_SOLAR_RESERVE, DEFAULT_SOLAR_RESERVE
+        ),
     )
     # The entities reach the controller through the coordinator, which
     # every one of them already holds.
@@ -1874,56 +2051,130 @@ In `custom_components/daze/__init__.py`, inside `async_setup_entry`, after the c
 
 Add `"solar_controller": solar_controller,` to the `hass.data[DOMAIN][entry.entry_id]` dict.
 
-In `async_unload_entry`, inside the `if unload_ok:` block and before `coordinator.async_shutdown_timers()`:
+In `async_unload_entry`, **inside the existing `if entry_data is not None:` block**, before `coordinator.async_shutdown_timers()`:
 
 ```python
-        controller = entry_data.get("solar_controller")
-        if controller is not None:
-            await controller.async_stop()
+            controller = entry_data.get("solar_controller")
+            if controller is not None:
+                await controller.async_stop()
 ```
+
+The indentation is load-bearing. `entry_data` is `None` whenever the
+entry was already cleaned up — a second unload, or an unload after a
+failed setup — and that guard is why the existing code checks it. One
+level out, `None.get(...)` raises `AttributeError` and the rest of the
+teardown never runs, leaving the coordinator's timers firing against a
+closed client: the exact fault the comment above that block describes.
 
 Add the imports:
 
 ```python
-from .const import CONF_GRID_EXPORT_SENSOR, CONF_GRID_IMPORT_SENSOR
+from .const import (
+    CONF_GRID_EXPORT_SENSOR,
+    CONF_GRID_IMPORT_SENSOR,
+    CONF_SOLAR_RESERVE,
+    DEFAULT_SOLAR_RESERVE,
+)
 from .solar_controller import SolarController
 ```
 
 merging the `const` names into the existing import block.
 
-- [ ] **Step 6: Disarm from the services too**
+- [ ] **Step 8: Stop reloading the entry for a reserve change**
 
-In `custom_components/daze/__init__.py`, inside `_handle_set_charging_current`, immediately after `_refuse_if_offline()`:
+The reserve is stored in the entry's options (Task 7 writes it there),
+and `_async_update_listener` currently reloads the entry on any options
+change. Without this, every step of the reserve slider tears the
+integration down and rebuilds it: timers cancelled, entities recreated,
+the controller's smoothing window emptied, and the mode reset until the
+select restores it.
+
+In `custom_components/daze/__init__.py`, add above `_async_update_listener`:
+
+```python
+def _reload_signature(entry: ConfigEntry) -> tuple[Any, Any]:
+    """Return the parts of an entry whose change needs a reload.
+
+    The solar reserve is deliberately absent. It is applied live by the
+    controller, so rewriting it is not a reason to rebuild the entry;
+    everything else — credentials, the poll interval, the grid sensors
+    the controller is constructed with — is.
+    """
+    options = {
+        key: value
+        for key, value in entry.options.items()
+        if key != CONF_SOLAR_RESERVE
+    }
+    return (dict(entry.data), options)
+```
+
+and replace the body of `_async_update_listener` with:
+
+```python
+    entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    signature = _reload_signature(entry)
+
+    if entry_data is not None and entry_data.get("reload_signature") == (
+        signature
+    ):
+        _LOGGER.debug(
+            "Config entry %s changed in a way that needs no reload",
+            entry.entry_id,
+        )
+        return
+
+    _LOGGER.debug("Config entry updated for %s — reloading", entry.entry_id)
+    await hass.config_entries.async_reload(entry.entry_id)
+```
+
+Add `"reload_signature": _reload_signature(entry),` to the
+`hass.data[DOMAIN][entry.entry_id]` dict in `async_setup_entry`, and
+import `Any` from `typing` if it is not already imported there.
+
+- [ ] **Step 9: Disarm from the services too**
+
+In `custom_components/daze/__init__.py`, inside `_handle_set_charging_current`, `_handle_start_charge` and `_handle_stop_charge`, **immediately before** `_refuse_if_offline()`:
 
 ```python
         if coordinator.solar_controller is not None:
             coordinator.solar_controller.disarm(
-                "the charging current was set by a service call"
+                "the charge was commanded by a service call"
             )
 ```
 
-- [ ] **Step 7: Run the tests and lint**
+Before the offline check rather than after it, for the same reason as
+the entities: `_refuse_if_offline()` raises, and a user whose charger
+is briefly unreachable has still expressed the intent to take over.
+Word the reason for each handler — "the charging current was set by a
+service call" in `_handle_set_charging_current`.
+
+- [ ] **Step 10: Run the tests and lint**
 
 Run:
 ```bash
 python3 tests/run_all.py
 ruff check custom_components/daze/ tests/
 ```
-Expected: 0 failures, `All checks passed!`
+Expected: 0 failures, `All checks passed!`, with three more tests than
+the suite had before this task.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add custom_components/daze/__init__.py custom_components/daze/number.py custom_components/daze/solar_controller.py tests/test_entities.py
+git add custom_components/daze/__init__.py custom_components/daze/number.py custom_components/daze/switch.py custom_components/daze/coordinator.py custom_components/daze/solar_controller.py tests/test_entities.py tests/test_solar_controller.py
 git commit -m "feat: wire solar control into the entry and disarm on override
 
 The controller is created with the entry and stopped when it unloads,
-alongside the coordinator's own timers.
+alongside the coordinator's own timers. It is told the reserve from the
+entry's options rather than starting at zero, and a reserve-only
+options change no longer reloads the entry.
 
-Any limit change arriving through an entity or a service disarms solar
-control, because the controller writes through the API client and
-never through an entity. That makes the rule mechanical rather than a
-flag that has to be set and cleared correctly.
+Any limit change or charge toggle arriving through an entity or a
+service disarms solar control, because the controller writes through
+the API client and never through an entity. That makes the rule
+mechanical rather than a flag that has to be set and cleared
+correctly. Disarming clears the episode's clocks too, so re-arming
+hours later is not judged against a start nobody is waiting on.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -1941,12 +2192,23 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Test: `tests/test_entities.py` (append before `_main`)
 
 **Interfaces:**
-- Consumes: `SolarController` and `SolarMode` from Task 4, and
-  `hass.data[DOMAIN][entry.entry_id]["solar_controller"]` from Task 6.
+- Consumes: `SolarController` and `SolarMode` from Task 4,
+  `hass.data[DOMAIN][entry.entry_id]["solar_controller"]` from Task 6,
+  and `CONF_SOLAR_RESERVE` / `MAX_SOLAR_RESERVE` from Task 3.
 - Produces:
-  - `DazeSolarControlSelect` in `select.py`
-  - `DazeSolarReserveEntity` in `number.py`
+  - `DazeSolarControlSelect` in `select.py`, which refuses to leave
+    `off` until both grid sensors are chosen.
+  - `DazeSolarReserveEntity` in `number.py`, which persists the reserve
+    to the config entry's options.
   - `DazeSolarSurplusSensor` in `sensor.py`
+
+Note on coverage: `tests/test_entities.py` loads `const`, `payload`,
+`models`, `api`, `coordinator`, `number`, `select` and `switch` — not
+`sensor.py`, which pulls in the sensor catalogue and would need more
+stubs than it is worth here. The surplus sensor is therefore not
+covered by a test in this task. That is accepted: it is a read-only
+projection of `controller.surplus_w`, which Task 2 and Task 4 already
+test directly.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1960,27 +2222,115 @@ def test_solar_select_offers_three_modes() -> None:
     assert select_mod.SOLAR_MODE_OPTIONS == ["off", "simulate", "active"]
 
 
-def test_solar_select_refuses_active_without_sensors() -> None:
-    """Both grid sensors are required before it can do anything."""
+def _solar_select(configured: bool = False) -> tuple[Any, Any]:
+    """Build the solar select over a controller double."""
     select_mod = sys.modules["daze_entities_under_test.select"]
 
     class Ctl:
-        configured = False
-        mode = None
+        def __init__(self) -> None:
+            self.configured = configured
+            self.mode = None
 
         def add_listener(self, cb):
             return lambda: None
 
-    coordinator = FakeCoordinator(dict(BASE_DATA))
+    controller = Ctl()
     entity = select_mod.DazeSolarControlSelect(
-        coordinator=coordinator,
-        controller=Ctl(),
+        coordinator=FakeCoordinator(dict(BASE_DATA)),
+        controller=controller,
         serial_number="SER1",
         device_info={},
     )
+    return entity, controller
+
+
+def test_solar_select_is_unavailable_without_sensors() -> None:
+    """Both grid sensors are required before it can do anything."""
+    entity, _ = _solar_select(configured=False)
 
     assert entity.available is False
+
+
+def test_solar_select_refuses_to_arm_without_sensors() -> None:
+    """Availability is a hint to the dashboard, not a gate.
+
+    A service call or an automation reaches async_select_option
+    whatever the entity reports, so the refusal the spec requires —
+    "both are required before solar control can leave off" — has to be
+    enforced in the method that acts, and explained where the caller
+    can see it. Asserting `available is False` instead would pass
+    against a select that happily arms itself with no sensors at all.
+    """
+    entity, controller = _solar_select(configured=False)
+
+    raised = False
+    try:
+        asyncio.run(entity.async_select_option("active"))
+    except HomeAssistantError:
+        raised = True
+
+    assert raised, "arming without sensors was not refused"
+    assert controller.mode is None, "the mode was changed anyway"
+
+
+def test_solar_select_arms_once_the_sensors_are_there() -> None:
+    """The refusal must not be a blanket one."""
+    entity, controller = _solar_select(configured=True)
+
+    asyncio.run(entity.async_select_option("simulate"))
+
+    assert controller.mode is not None
+    assert controller.mode.value == "simulate"
+
+
+def test_the_reserve_survives_a_restart() -> None:
+    """An in-memory reserve returns to 0 W on every restart, and 0 W
+    means the house gets nothing before the car does. A setting that
+    exists to hold power back must not quietly stop holding it.
+    """
+    number_mod = sys.modules["daze_entities_under_test.number"]
+    const_mod = sys.modules["daze_entities_under_test.const"]
+
+    class Ctl:
+        reserve_w = 0.0
+
+    class FakeEntry:
+        options: dict[str, Any] = {"poll_interval": 30}
+
+    class FakeEntries:
+        def __init__(self) -> None:
+            self.updated: list[dict[str, Any]] = []
+
+        def async_update_entry(self, entry, options=None, **kwargs):
+            entry.options = options
+            self.updated.append(options)
+
+    class FakeHass:
+        def __init__(self) -> None:
+            self.config_entries = FakeEntries()
+
+    entry = FakeEntry()
+    entity = number_mod.DazeSolarReserveEntity(
+        coordinator=FakeCoordinator(dict(BASE_DATA)),
+        controller=Ctl(),
+        entry=entry,
+        serial_number="SER1",
+        device_info={},
+    )
+    entity.hass = FakeHass()
+
+    asyncio.run(entity.async_set_native_value(1500))
+
+    assert entity.native_value == 1500
+    assert entry.options[const_mod.CONF_SOLAR_RESERVE] == 1500
+    # The rest of the options must survive the write, or saving a
+    # reserve would silently drop the user's grid sensors.
+    assert entry.options["poll_interval"] == 30
 ```
+
+Add `from homeassistant.exceptions import HomeAssistantError` to the
+test module's imports if it is not already there; the stub harness
+already provides it.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -2058,14 +2408,31 @@ class DazeSolarControlSelect(
         }
 
     async def async_select_option(self, option: str) -> None:
-        """Set the mode."""
+        """Set the mode, refusing to arm before it can work.
+
+        `available` is a hint for the dashboard. A service call or an
+        automation arrives here whatever the entity reports, so the
+        rule that both grid sensors are required before solar control
+        leaves "off" has to be enforced in the method that acts — and
+        raised, not logged, because the caller asked for something and
+        is entitled to know it did not happen.
+        """
         from .solar_controller import SolarMode
+
+        if option != "off" and not self._controller.configured:
+            raise HomeAssistantError(
+                "Solar control needs both a grid import and a grid "
+                "export sensor before it can be armed. Set them in the "
+                "integration's options."
+            )
 
         self._controller.mode = SolarMode(option)
         self.async_write_ha_state()
 ```
 
-Add `from typing import Any` to the imports if not already present, and register the entity in `select.py`'s `async_setup_entry` by appending it to the `async_add_entities([...])` list:
+Add `from typing import Any` and
+`from homeassistant.exceptions import HomeAssistantError` to the
+imports if not already present, and register the entity in `select.py`'s `async_setup_entry` by appending it to the `async_add_entities([...])` list:
 
 ```python
             DazeSolarControlSelect(
@@ -2075,6 +2442,34 @@ Add `from typing import Any` to the imports if not already present, and register
                 device_info=device_info,
             ),
 ```
+
+Read the controller with `entry_data["solar_controller"]` only if you
+are confident the key is always present — it is, since Task 6 writes it
+before the platforms are forwarded. If that ordering ever changes, a
+`KeyError` here fails the whole select platform and takes
+`select.daze_operation_mode` down with it, so the safer form is:
+
+```python
+    entities: list[SelectEntity] = [
+        DazeWallboxSelectEntity(...),  # the existing entity, unchanged
+    ]
+
+    solar_controller = entry_data.get("solar_controller")
+    if solar_controller is not None:
+        entities.append(
+            DazeSolarControlSelect(
+                coordinator=coordinator,
+                controller=solar_controller,
+                serial_number=serial_number,
+                device_info=device_info,
+            )
+        )
+
+    async_add_entities(entities)
+```
+
+Use the second form. The same applies to `number.py` and `sensor.py`
+below.
 
 - [ ] **Step 4: Add the reserve number**
 
@@ -2097,12 +2492,23 @@ class DazeSolarReserveEntity(
         self,
         coordinator: DazeDataUpdateCoordinator,
         controller: Any,
+        entry: ConfigEntry,
         serial_number: str,
         device_info: DeviceInfo,
     ) -> None:
-        """Initialise the reserve control."""
+        """Initialise the reserve control.
+
+        Args:
+            coordinator: The Daze data coordinator.
+            controller: The solar controller whose reserve this is.
+            entry: The config entry the reserve is persisted in.
+            serial_number: The wallbox serial number.
+            device_info: Device info for the device registry.
+
+        """
         super().__init__(coordinator)
         self._controller = controller
+        self._entry = entry
         self._serial_number = serial_number
         self._attr_unique_id = f"{serial_number}_solar_reserve"
         self._attr_device_info = device_info
@@ -2113,12 +2519,49 @@ class DazeSolarReserveEntity(
         return float(self._controller.reserve_w)
 
     async def async_set_native_value(self, value: float) -> None:
-        """Set the reserve."""
+        """Set the reserve, and remember it across a restart.
+
+        Written to the config entry's options, not just to the
+        controller. An in-memory reserve returns to 0 W every time
+        Home Assistant restarts, and 0 W means the house gets nothing
+        before the car does — a setting whose whole job is holding
+        power back, quietly stopping. Task 6's _reload_signature is
+        what keeps this write from reloading the entry on every step
+        of the slider.
+        """
         self._controller.reserve_w = value
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            options={**self._entry.options, CONF_SOLAR_RESERVE: int(value)},
+        )
         self.async_write_ha_state()
 ```
 
-Add `MAX_SOLAR_RESERVE` to the `from .const import (...)` block, and register the entity in `number.py`'s `async_setup_entry` list.
+Add `CONF_SOLAR_RESERVE` and `MAX_SOLAR_RESERVE` to the `from .const import (...)` block. `ConfigEntry` is already imported in `number.py` under `TYPE_CHECKING`, which is enough for the annotation.
+
+Register the entity in `number.py`'s `async_setup_entry` list, guarded
+the same way as the select, and passing the entry that function already
+receives:
+
+```python
+    solar_controller = entry_data.get("solar_controller")
+    if solar_controller is not None:
+        entities.append(
+            DazeSolarReserveEntity(
+                coordinator=coordinator,
+                controller=solar_controller,
+                entry=entry,
+                serial_number=serial_number,
+                device_info=device_info,
+            )
+        )
+```
+
+`number.py`'s `async_setup_entry` currently passes a list literal
+straight to `async_add_entities`; build it as `entities = [...]` first.
+
+The reserve entity must **not** call `_disarm_solar`. It is solar
+control's own setting, not a manual override of the charging limit.
 
 - [ ] **Step 5: Add the surplus sensor**
 
@@ -2137,7 +2580,7 @@ class DazeSolarSurplusSensor(
     _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = "W"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
 
     def __init__(
         self,
@@ -2166,7 +2609,24 @@ class DazeSolarSurplusSensor(
         return self._controller.surplus_w
 ```
 
-Register it in `sensor.py`'s `async_setup_entry` by appending to the `entities` list.
+`UnitOfPower` is already imported in `sensor.py`.
+
+`sensor.py` builds `entities` as a list comprehension over `SENSORS`,
+so there is no literal to extend. Append after it, guarded like the
+other two:
+
+```python
+    solar_controller = entry_data.get("solar_controller")
+    if solar_controller is not None:
+        entities.append(
+            DazeSolarSurplusSensor(
+                coordinator=coordinator,
+                controller=solar_controller,
+                serial_number=serial_number,
+                device_info=device_info,
+            )
+        )
+```
 
 - [ ] **Step 6: Add the strings**
 
@@ -2206,14 +2666,19 @@ The control is one tri-state select rather than a switch and a
 dry-run flag, so the meaningless combination cannot be selected. It
 carries the last decision and its reason as attributes, because an
 autonomous feature that acts silently cannot be understood after the
-fact.
+fact, and it refuses to leave 'off' until both grid sensors are set:
+availability is a hint to the dashboard, not a gate on a service call.
+
+The reserve is persisted to the entry's options. Held only in memory
+it returned to 0 W on every restart, which hands the house's share to
+the car without saying so.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 8: React immediately when surplus collapses
+### Task 8: Start the stop clock when surplus collapses
 
 **Files:**
 - Modify: `custom_components/daze/solar_controller.py`
@@ -2222,44 +2687,173 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `SolarController` from Task 4.
 - Produces: no new public surface. The controller subscribes to state
-  changes on its two grid sensors.
+  changes on its two grid sensors, and gains three private attributes:
+  `_collapsed_since` (when the raw reading fell below the floor),
+  `_last_evaluation` and `_evaluating`.
 
-Unused cheap power costs nothing; imported expensive power is what pure
-solar mode exists to avoid. On a fixed two-minute tick a collapse in
-surplus keeps the car importing for up to two minutes. Rising surplus
-can wait; falling surplus cannot.
+**What this task is actually for.** Not what it looks like. The obvious
+reading — "a fixed tick keeps the car importing for up to two minutes"
+— is wrong, and building to it would produce a task that cannot deliver
+what it promises.
 
-- [ ] **Step 1: Write the failing test**
+Trace it with the real constants. A stop needs
+`seconds_below_threshold >= STOP_DELAY_SECONDS`, which is 600 s. That
+clock is kept by `_track_thresholds` from the **smoothed** figure, and
+the smoother is a five-minute average: after a collapse from 4000 W to
+0 W it takes several samples before the average itself drops below the
+~1500 W floor. Nothing about evaluating sooner changes the 600 s, so
+evaluating sooner saves one tick at most — 120 s out of 700 s or more.
+
+What is worth fixing is the *start* of that clock. Surplus fell at
+12:00; the average admits it at 12:04; the stop then fires at 12:14
+instead of 12:10, and the car imports at up to the charger's ceiling
+for the extra four minutes. So: the collapse itself starts the stop
+clock, and the smoothed figure decides what to do — not when the drop
+began. That is what the spec means by evaluating a drop immediately.
+
+The second half of the task is making sure this costs nothing. The
+120-second tick was the only thing bounding how often the controller
+writes to the charger; a sensor-driven path removes that bound in
+exactly the direction that writes most, so it needs a latch and a
+minimum spacing of its own.
+
+- [ ] **Step 1: Write the failing tests**
 
 Append to `tests/test_solar_controller.py`, before `_main`:
 
 ```python
-def test_a_collapse_is_evaluated_without_waiting_for_the_tick() -> None:
-    """Rising surplus can wait for the tick; falling surplus cannot,
-    or the car imports until the next one."""
+def test_a_collapse_starts_the_stop_clock_when_it_happens() -> None:
+    """The ten-minute stop delay must run from the collapse, not from
+    the moment the five-minute average catches up with it.
+
+    Asserting the mark itself rather than "a stop was sent": no stop
+    can be sent at the moment of a collapse — the smoothed figure is
+    still healthy, which is the whole reason this path exists — so a
+    test that looked for a command would pass against an
+    implementation that did nothing at all.
+    """
+    controller, _, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [20_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+
+        # A healthy history: 3000 W drawn plus 5000 W exported.
+        for _ in range(2):
+            asyncio.run(controller.async_tick())
+            clock[0] += solar.TICK_SECONDS
+
+        clock[0] += 1
+        collapse_at = clock[0]
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+
+        asyncio.run(controller.async_sensor_changed())
+
+        assert controller._below_since == collapse_at, (
+            "the stop clock did not start at the collapse: "
+            f"{controller._below_since} instead of {collapse_at}"
+        )
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+
+def test_a_collapse_is_evaluated_once_not_on_every_sensor_update() -> None:
+    """A grid sensor reporting every ten seconds updates six times a
+    minute, and the raw reading stays below the floor for as long as
+    the average takes to catch up. Without a latch each of those
+    updates runs a full evaluation, and each can rewrite the limit:
+    the twenty-command hourly backstop is spent in minutes, and it is
+    then not there for the stop when the stop finally comes.
+    """
     controller, coordinator, hass = build()
     controller.mode = controller_module.SolarMode.ACTIVE
 
-    # Establish a healthy history.
-    for _ in range(3):
+    clock = [21_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
         asyncio.run(controller.async_tick())
 
-    coordinator.api_client.calls.clear()
-    hass.states.set("sensor.grid_export", "0")
-    hass.states.set("sensor.grid_import", "4000")
+        clock[0] += solar.TICK_SECONDS + 1
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_sensor_changed())
 
-    before = controller.surplus_w
-    assert before is not None, "the healthy ticks should have left a figure"
+        after_first = len(coordinator.api_client.calls)
 
-    asyncio.run(controller.async_sensor_changed())
+        # The sensor keeps reporting the same collapsed figures.
+        for _ in range(6):
+            clock[0] += 10
+            asyncio.run(controller.async_sensor_changed())
+    finally:
+        controller_module.time.monotonic = original_monotonic
 
-    # Compare against the pre-collapse figure rather than asserting these
-    # are merely set. A fast path that did nothing at all would leave both
-    # holding their values from the three healthy ticks, so "is not None"
-    # passes under exactly the regression this test exists to catch.
-    assert controller.surplus_w is not None
-    assert controller.surplus_w < before, "the collapse was not evaluated"
-    assert controller.last_decision is not None
+    assert len(coordinator.api_client.calls) == after_first, (
+        "the fast path fired again while the same collapse was still "
+        "being counted"
+    )
+
+
+def test_a_recovery_re_arms_the_fast_path() -> None:
+    """A kettle is not a collapse.
+
+    When the raw reading comes back above the floor the stop clock must
+    let go of it. Otherwise a dozen three-kilowatt kitchen dips over an
+    afternoon add up to ten minutes "below the floor" and stop a charge
+    that never wanted for surplus.
+    """
+    controller, _, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [22_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+        asyncio.run(controller.async_tick())
+
+        clock[0] += solar.TICK_SECONDS + 1
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_sensor_changed())
+        assert controller._below_since is not None
+
+        # The kettle switches off.
+        clock[0] += 30
+        hass.states.set(
+            "sensor.grid_import", "0", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "5000", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_sensor_changed())
+        assert controller._collapsed_since is None
+
+        clock[0] += solar.TICK_SECONDS
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert controller._below_since is None, (
+        "the stop clock is still anchored to a collapse that recovered"
+    )
 
 
 def test_a_rise_does_not_trigger_an_immediate_evaluation() -> None:
@@ -2276,6 +2870,71 @@ def test_a_rise_does_not_trigger_an_immediate_evaluation() -> None:
     asyncio.run(controller.async_sensor_changed())
 
     assert len(coordinator.api_client.calls) == before
+
+
+def test_a_sensor_event_during_a_tick_does_not_start_a_second_one() -> None:
+    """async_tick has two callers now, and an API call is an await.
+
+    A sensor event arriving while a tick waits on the charger would
+    otherwise run a second evaluation against the same coordinator
+    data: both append to _command_times, both reach the same branch,
+    and both send the same command. The clock is advanced past the
+    minimum spacing inside the call on purpose, so that only the
+    re-entrancy guard can be what stops it.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [23_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    reentered: list[int] = []
+
+    async def _set_current_then_collapse(
+        serial: str, current_ma: int, attempts: int = 8
+    ) -> dict:
+        coordinator.api_client.calls.append(("current", current_ma))
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        clock[0] += solar.TICK_SECONDS + 1
+        await controller.async_sensor_changed()
+        reentered.append(1)
+        return {}
+
+    coordinator.api_client.async_set_max_charging_current = (
+        _set_current_then_collapse
+    )
+
+    try:
+        asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert reentered == [1], "the sensor event never arrived mid-tick"
+    assert len(coordinator.api_client.calls) == 1, (
+        "a second evaluation ran inside the first and commanded again"
+    )
+
+
+def test_async_start_still_clears_the_stopped_flag() -> None:
+    """async_start is rewritten in this task, and the flag it sets is
+    easy to drop on the way past: no other test builds a controller,
+    stops it and starts it again, so nothing else would notice.
+    """
+    controller, _, _ = build()
+    SCHEDULED.clear()
+
+    asyncio.run(controller.async_stop())
+    assert controller._stopped is True
+
+    asyncio.run(controller.async_start())
+
+    assert controller._stopped is False
+    assert len(SCHEDULED) == 1
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -2283,18 +2942,117 @@ def test_a_rise_does_not_trigger_an_immediate_evaluation() -> None:
 Run: `python3 tests/test_solar_controller.py`
 Expected: FAIL with `AttributeError: 'SolarController' object has no attribute 'async_sensor_changed'`
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Make the tick non-re-entrant**
 
-Add to `SolarController` in `custom_components/daze/solar_controller.py`:
+`async_tick` has had exactly one caller, the timer. This task adds a
+second, driven by sensor events that can arrive while a tick is waiting
+on an API call.
+
+In `custom_components/daze/solar_controller.py`, rename the existing
+`async_tick` to `_async_evaluate`, leaving its body as it is apart from
+the edits in the steps below, and add this in its place:
+
+```python
+    async def async_tick(self) -> None:
+        """Evaluate once, unless an evaluation is already running.
+
+        Skipping rather than queueing: a queued evaluation would run
+        against coordinator data that is by then one command out of
+        date, and would decide the same thing twice — two entries in
+        _command_times, two commands on the wire.
+
+        A plain flag rather than an asyncio.Lock. The lock would be
+        correct in production and wrong in the test suite, which drives
+        the controller through asyncio.run() one call at a time: a Lock
+        binds itself to the first event loop that acquires it and
+        raises RuntimeError on the next one. The event loop is
+        single-threaded, so nothing can interleave between the check
+        and the assignment below, and a flag is enough.
+        """
+        if self._evaluating:
+            _LOGGER.debug("An evaluation is already running; skipping")
+            return
+
+        self._evaluating = True
+        try:
+            await self._async_evaluate()
+        finally:
+            self._evaluating = False
+```
+
+- [ ] **Step 4: Start the stop clock at the collapse**
+
+In `_async_evaluate`, record when each evaluation ran, immediately
+after `now = time.monotonic()`:
+
+```python
+        self._last_evaluation = now
+```
+
+and pass the raw reading to `_track_thresholds`, which currently
+receives only the smoothed state:
+
+```python
+        self._track_thresholds(state, now, surplus)
+```
+
+Then replace `_track_thresholds` with:
+
+```python
+    def _track_thresholds(
+        self, state: SolarState, now: float, raw_surplus: float
+    ) -> None:
+        """Maintain how long surplus has been above or below the floor.
+
+        Two figures, deliberately. What to do is decided from the
+        smoothed surplus, because raw grid readings move with every
+        kettle. When the below-floor period *started* is taken from the
+        raw reading, because the five-minute average is minutes behind
+        a real collapse, and the stop delay is counted from this mark:
+        anchoring it to the average adds those minutes to the ten, and
+        the car imports at up to the charger's ceiling throughout.
+
+        _collapsed_since holds that anchor and doubles as the fast
+        path's latch. It is cleared the moment the raw reading comes
+        back above the floor, so a kettle that dips the supply for a
+        minute leaves nothing behind.
+        """
+        available = state.surplus_w - state.reserve_w
+
+        if raw_surplus - state.reserve_w >= state.floor_w:
+            self._collapsed_since = None
+        elif self._collapsed_since is None:
+            self._collapsed_since = now
+
+        if available >= state.floor_w and self._collapsed_since is None:
+            self._below_since = None
+            if self._above_since is None:
+                self._above_since = now
+        else:
+            self._above_since = None
+            if self._below_since is None:
+                self._below_since = self._collapsed_since or now
+```
+
+- [ ] **Step 5: Add the fast path**
+
+Add to `SolarController`:
 
 ```python
     async def async_sensor_changed(self) -> None:
-        """Evaluate now if surplus has collapsed, otherwise wait.
+        """Note a collapse as soon as it happens.
 
-        A fixed tick would keep the car importing for up to two
-        minutes after surplus disappears. Rising surplus is not urgent:
-        acting on every increase would rewrite the limit constantly
-        against a charger that takes seconds to apply a change.
+        What this brings forward is the start of the stop clock, not
+        the stop. The stop needs ten minutes below the floor and is
+        decided from the smoothed figure, which is minutes behind the
+        drop; starting its clock from the drop itself is worth about
+        four minutes of avoided import, and is the whole benefit. An
+        evaluation is run as well when it is cheap to do so, because
+        the collapse may also be the moment a limit becomes too high.
+
+        Rising surplus is not urgent, and is left to the tick: acting
+        on every increase would rewrite the limit constantly against a
+        charger that takes seconds to apply a change.
         """
         if self._mode is SolarMode.OFF:
             return
@@ -2303,16 +3061,42 @@ Add to `SolarController` in `custom_components/daze/solar_controller.py`:
         if surplus is None:
             return
 
-        smoothed = self._smoother.value()
+        now = time.monotonic()
         data = self._coordinator.data or {}
         floor = milliamps_to_watts(min_charging_current(data), data)
 
-        collapsed = (
-            surplus - self._reserve_w < floor
-            and (smoothed is None or smoothed - self._reserve_w >= floor)
-        )
+        if surplus - self._reserve_w >= floor:
+            # Healthy again. Let go of the anchor and re-arm, so the
+            # next collapse is counted from itself.
+            self._collapsed_since = None
+            return
 
-        if not collapsed:
+        if self._collapsed_since is not None:
+            # This collapse is already being counted. Without this the
+            # condition below the floor holds on every sensor update
+            # until the average catches up, and a sensor reporting
+            # every ten seconds would run six evaluations a minute and
+            # spend the hourly command backstop in about three.
+            return
+
+        self._collapsed_since = now
+
+        smoothed = self._smoother.value()
+        if smoothed is not None and smoothed - self._reserve_w < floor:
+            # The average is already below the floor, so the ordinary
+            # tick is already treating this as a deficit and the clock
+            # is already running. Nothing to bring forward.
+            return
+
+        if (
+            self._last_evaluation is not None
+            and now - self._last_evaluation < TICK_SECONDS
+        ):
+            _LOGGER.debug(
+                "Surplus collapsed to %.0f W; the stop clock starts now, "
+                "the evaluation waits for the tick",
+                surplus,
+            )
             return
 
         _LOGGER.debug(
@@ -2321,11 +3105,19 @@ Add to `SolarController` in `custom_components/daze/solar_controller.py`:
         await self.async_tick()
 ```
 
+The spacing check costs nothing that matters: the collapse is recorded
+either way, and that is the part with a deadline. Only the evaluation
+waits, by at most one tick.
+
 Register the subscription in `async_start`:
 
 ```python
     async def async_start(self) -> None:
         """Begin ticking, and watch the grid sensors for a collapse."""
+        # Keep this. async_stop sets the flag to prevent a tick already
+        # in flight from re-arming itself, and a controller started
+        # again after a stop would otherwise never tick at all.
+        self._stopped = False
         self._schedule_tick()
 
         entities = [
@@ -2347,6 +3139,11 @@ Add to `__init__`:
 
 ```python
         self._cancel_listener: Callable[[], None] | None = None
+        # When the raw reading fell below the floor and has stayed
+        # there. Anchors the stop clock and latches the fast path.
+        self._collapsed_since: float | None = None
+        self._last_evaluation: float | None = None
+        self._evaluating = False
 ```
 
 Add to `async_stop`, before clearing listeners:
@@ -2356,6 +3153,10 @@ Add to `async_stop`, before clearing listeners:
             self._cancel_listener()
             self._cancel_listener = None
 ```
+
+And add `self._collapsed_since = None` to `disarm` (Task 6), beside the
+other clocks it clears. A latch left armed from before the user took
+over would anchor the next collapse's stop clock to the old one.
 
 And to the imports:
 
@@ -2367,15 +3168,20 @@ from homeassistant.helpers.event import (
 ```
 
 Add `async_track_state_change_event=lambda hass, entities, cb: (lambda: None)`
-to the `homeassistant.helpers.event` stub in `tests/test_solar_controller.py`.
+to the `homeassistant.helpers.event` stub in **both**
+`tests/test_solar_controller.py` and `tests/test_entities.py`. The
+second is not optional: Task 7's select imports `SolarMode` from
+`.solar_controller` inside `async_select_option`, so the entity tests
+import this module at runtime, and an import line that names a symbol
+the stub does not have fails the whole file.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `python3 tests/test_solar_controller.py`
-Expected: PASS, `0 failed`, with two more tests than the suite had before
+Expected: PASS, `0 failed`, with six more tests than the suite had before
 this task. The absolute count is deliberately not stated; see Task 5.
 
-- [ ] **Step 5: Lint and full suite**
+- [ ] **Step 7: Lint and full suite**
 
 Run:
 ```bash
@@ -2384,17 +3190,25 @@ python3 tests/run_all.py
 ```
 Expected: `All checks passed!`, 0 failures.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add custom_components/daze/solar_controller.py tests/test_solar_controller.py
-git commit -m "feat: evaluate immediately when surplus collapses
+git commit -m "feat: start the stop clock when surplus actually collapses
 
-A fixed two-minute tick keeps the car importing for up to two minutes
-after surplus disappears, which is exactly what pure solar mode exists
-to avoid. Rising surplus still waits for the tick: acting on every
-increase would rewrite the limit constantly against a charger that
-takes seconds to apply a change.
+The ten-minute stop delay was counted from the moment the five-minute
+average admitted the drop, several minutes after the drop itself, and
+the car imported at up to the charger's ceiling in between. The raw
+reading now anchors that clock; the smoothed figure still decides what
+to do.
+
+Rising surplus still waits for the tick, and so does most of the work
+on a collapse: the fast path fires once per collapse and never more
+often than the tick would, because the twenty-command hourly backstop
+is a backstop against bugs and has to still be there for the stop.
+
+The tick is no longer re-entrant, now that a sensor event can reach it
+while an API call is in flight.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -2404,45 +3218,136 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ### Task 9: Remaining guards, and surviving a restart
 
 **Files:**
+- Modify: `custom_components/daze/const.py`
+- Modify: `custom_components/daze/config_flow.py` (the `DazeOptionsFlowHandler` class)
+- Modify: `custom_components/daze/strings.json`
+- Modify: `custom_components/daze/translations/it.json`
+- Modify: `custom_components/daze/__init__.py` (one more keyword on the controller)
 - Modify: `custom_components/daze/solar_controller.py`
 - Modify: `custom_components/daze/select.py` (the solar select)
 - Test: `tests/test_solar_controller.py` (append before `_main`)
+- Test: `tests/test_entities.py` (append before `_main`)
 
 **Interfaces:**
 - Consumes: `SolarController` from Task 4, `DazeSolarControlSelect` from Task 7.
-- Produces: `SolarController.unsupported_reason` property, returning
-  `str | None`.
+- Produces:
+  - `CONF_SUPPLY_PHASES = "supply_phases"`, `SUPPLY_PHASES_SINGLE = "single"`,
+    `SUPPLY_PHASES_THREE = "three"` in `const.py`, and a third question in
+    the options flow. **No default**: an unanswered question is not an
+    answer.
+  - `SolarController(..., supply_phases=...)`
+  - `SolarController.unsupported_reason` property, returning `str | None`
+    — the single answer to "can solar control run here, and if not, why
+    not". The select uses it for availability and for refusing to arm,
+    the tick uses it to stand down, and the README quotes it.
 
-Three things the spec requires that nothing yet implements: refusing a
-supply the charger cannot follow, surviving a Home Assistant restart
-without stopping a healthy charge, and remembering the mode.
+Four things the spec requires that nothing yet implements: refusing a
+supply the charger cannot follow, standing down for the charger's own
+eco mode and schedules, surviving a Home Assistant restart without
+stopping a healthy charge, and remembering the mode.
+
+**Why the supply is declared rather than detected.** The Daze payload
+has exactly one phase field, `evseIsThreePhase`, and `payload.py:308`
+already reads it as the *charger's* phase count when deriving the
+current floor. Nothing in the payload describes the supply feeding it.
+A guard keyed on a field that does not exist would return "supported"
+for every installation on earth and pass its own tests, so the question
+is asked in the options flow instead. Until it is answered, solar
+control refuses to arm: guessing single-phase would let a three-phase
+house follow a meter that nets across phases and load the one phase the
+charger is on.
+
+(`sensor_catalog.py:243` surfaces `evseIsThreePhase` to users as
+"Three-Phase Supply", which contradicts `payload.py`'s reading of the
+same field. Not this task's job — renaming an existing entity breaks
+dashboards — but it is worth a follow-up, and it is why the option is
+named for the *supply* explicitly.)
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/test_solar_controller.py`, before `_main`. Add
+First, `build()` in `tests/test_solar_controller.py` must declare a
+supply, or every test in the file stops at the new guard. Change it to:
+
+```python
+def build(
+    data: dict[str, Any] | None = None,
+    supply_phases: str | None = "single",
+) -> tuple[Any, Any, Any]:
+    """Build a controller wired to stubs.
+
+    Declares a single-phase supply unless a test says otherwise: that
+    is the ordinary installation, and the alternatives each have a test
+    of their own below.
+    """
+```
+
+passing `supply_phases=supply_phases` to the constructor.
+
+Then append to `tests/test_solar_controller.py`, before `_main`. Add
 `import time` to the file's imports if it is not already there — the
 seeding test below reads `time.monotonic()`:
 
 ```python
-def test_three_phase_supply_with_a_single_phase_charger_is_refused() -> None:
-    """Grid meters usually report net across phases, so the surplus
-    can exist mostly on phases the charger cannot reach."""
-    data = dict(CHARGING_DATA)
-    data["evseIsThreePhase"] = False
-    data["supplyGrid3F"] = True
-    controller, _, _ = build(data)
+def test_an_undeclared_supply_refuses_to_run() -> None:
+    """The Daze payload cannot tell us how many phases feed the house,
+    so the user is asked. Until they answer, an unanswered question is
+    not evidence of a single-phase supply: guessing wrong loads one
+    phase with the whole of a netted three-phase surplus.
+    """
+    controller, _, _ = build(supply_phases=None)
 
     assert controller.unsupported_reason is not None
     assert "phase" in controller.unsupported_reason
 
 
-def test_a_matched_supply_is_supported() -> None:
+def test_three_phase_supply_with_a_single_phase_charger_is_refused() -> None:
+    """Grid meters usually report net across phases, so the surplus
+    can exist mostly on phases the charger cannot reach."""
     data = dict(CHARGING_DATA)
     data["evseIsThreePhase"] = False
-    data["supplyGrid3F"] = False
-    controller, _, _ = build(data)
+    controller, _, _ = build(data, supply_phases="three")
+
+    assert controller.unsupported_reason is not None
+    assert "phase" in controller.unsupported_reason
+
+
+def test_a_matched_single_phase_pair_is_supported() -> None:
+    data = dict(CHARGING_DATA)
+    data["evseIsThreePhase"] = False
+    controller, _, _ = build(data, supply_phases="single")
 
     assert controller.unsupported_reason is None
+
+
+def test_a_three_phase_charger_on_a_three_phase_supply_is_supported() -> None:
+    """The refusal is about the mismatch, not about three phases."""
+    data = dict(CHARGING_DATA)
+    data["evseIsThreePhase"] = True
+    controller, _, _ = build(data, supply_phases="three")
+
+    assert controller.unsupported_reason is None
+
+
+def test_eco_mode_refuses_to_arm() -> None:
+    """The spec asks for this three times: the charger's own eco mode
+    is controlling it, so solar control stands down and says so rather
+    than quietly deciding nothing every two minutes for ever.
+    """
+    data = dict(CHARGING_DATA)
+    data["ecoModeEnabled"] = True
+    controller, _, _ = build(data)
+
+    assert controller.unsupported_reason is not None
+    assert "eco" in controller.unsupported_reason
+
+
+def test_a_charger_schedule_refuses_to_arm() -> None:
+    data = dict(CHARGING_DATA)
+    data["schedules"] = [{"id": 1}]
+    controller, _, _ = build(data)
+
+    assert controller.unsupported_reason is not None
+    assert "schedule" in controller.unsupported_reason
 
 
 def test_a_charge_already_running_counts_as_having_run() -> None:
@@ -2464,58 +3369,352 @@ def test_a_charge_already_running_counts_as_having_run() -> None:
         "a charge already running must count as having served its minimum "
         f"run time, but the mark was seeded only {elapsed:.0f}s back"
     )
+
+
+def test_a_stop_that_could_not_be_sent_is_not_re_issued_every_tick() -> None:
+    """_carry_out clears the minimum-run clock after a stop it sent,
+    and "sent" includes one only queued for the background retry —
+    where the charger is still charging. Seeding that clock again on
+    the next tick makes decide() return STOP again, and again every
+    two minutes, until the hourly backstop trips forty minutes later.
+    Handing a stuck link to the background retry and leaving it there
+    is the spec's own rule; this is why the seeding is once per charge
+    and not once per tick.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [24_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+        hass.states.set(
+            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_tick())  # starts the below-floor timer
+
+        clock[0] += solar.STOP_DELAY_SECONDS + 1
+
+        async def _rpc_failure(serial: str, attempts: int = 8) -> dict:
+            coordinator.api_client.calls.append(("stop", serial))
+            raise api_module.ApiCommandRejectedError(
+                "unreachable", code=api_module.COMMAND_ERROR_CODE_RPC_FAILURE
+            )
+
+        coordinator.api_client.async_stop_charge = _rpc_failure
+        asyncio.run(controller.async_tick())
+
+        for _ in range(3):
+            clock[0] += solar.TICK_SECONDS
+            asyncio.run(controller.async_tick())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    stops = len(
+        [call for call in coordinator.api_client.calls if call[0] == "stop"]
+    )
+    assert stops == 1, f"the queued stop was re-issued: {stops} attempts"
+
+
+def test_a_charge_that_starts_later_is_seeded_in_its_turn() -> None:
+    """Once per charging episode, not once per lifetime.
+
+    A charge the user starts by hand an hour from now has also been
+    running longer than we have been watching it. If the flag never
+    reset, that charge's minimum-run clock would read as zero for ever
+    and solar control could never stop it — the mirror image of the
+    bug the seeding exists to fix.
+    """
+    controller, coordinator, _ = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.SIMULATE
+
+    asyncio.run(controller.async_tick())
+    assert controller._started_at is None
+
+    coordinator.data = dict(CHARGING_DATA)
+    asyncio.run(controller.async_tick())
+
+    assert controller._started_at is not None
+```
+
+And append to `tests/test_entities.py`, before `_main`:
+
+```python
+def test_the_solar_select_restores_its_mode() -> None:
+    """The spec asks for restoration across a restart by name.
+
+    Without it every Home Assistant restart silently disarms solar
+    control: the select comes back "off", the car stops following the
+    sun, and nothing says so.
+    """
+    entity, controller = _solar_select(configured=True)
+
+    class LastState:
+        state = "active"
+
+    async def _last_state() -> Any:
+        return LastState()
+
+    entity.async_get_last_state = _last_state
+
+    asyncio.run(entity.async_added_to_hass())
+
+    assert controller.mode is not None
+    assert controller.mode.value == "active"
+```
+
+`_solar_select` is Task 7's helper. Give its double an
+`unsupported_reason` now that the select reads one:
+
+```python
+        @property
+        def unsupported_reason(self):
+            if not self.configured:
+                return "no grid sensors have been chosen"
+            return None
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python3 tests/test_solar_controller.py`
-Expected: FAIL with `AttributeError: ... 'unsupported_reason'`
+Run:
+```bash
+python3 tests/test_solar_controller.py
+python3 tests/test_entities.py
+```
+Expected: FAIL with `AttributeError: ... 'unsupported_reason'`, and
+`TypeError: build() got an unexpected keyword argument 'supply_phases'`
+until Step 1's change to `build` is in place.
 
-- [ ] **Step 3: Implement the guard and the seeding**
+- [ ] **Step 3: Add the constants**
+
+Append to `custom_components/daze/const.py`, after the solar block Task 3 added:
+
+```python
+# How many phases feed the house. Declared by the user, because the
+# Daze payload does not say: its only phase field, evseIsThreePhase,
+# describes the charger, and payload.min_charging_current already reads
+# it that way. There is deliberately no default — a three-phase meter
+# reports surplus netted across phases, and following it with a
+# single-phase charger loads the one phase the charger is on.
+CONF_SUPPLY_PHASES = "supply_phases"
+SUPPLY_PHASES_SINGLE = "single"
+SUPPLY_PHASES_THREE = "three"
+```
+
+- [ ] **Step 4: Ask the question in the options flow**
+
+In `custom_components/daze/config_flow.py`, add a third field to the
+schema Task 3 built in `DazeOptionsFlowHandler.async_step_init`, after
+the two sensor pickers:
+
+```python
+                # Optional so the form can still be saved without it,
+                # not because it has a default: solar control refuses
+                # to arm until it is answered.
+                vol.Optional(
+                    CONF_SUPPLY_PHASES,
+                    description={
+                        "suggested_value": options.get(CONF_SUPPLY_PHASES)
+                    },
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[SUPPLY_PHASES_SINGLE, SUPPLY_PHASES_THREE],
+                        translation_key="supply_phases",
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+```
+
+Add `CONF_SUPPLY_PHASES`, `SUPPLY_PHASES_SINGLE` and
+`SUPPLY_PHASES_THREE` to the existing `from .const import (...)` block.
+
+In `custom_components/daze/strings.json`, add to
+`options.step.init.data`:
+
+```json
+        "supply_phases": "Grid supply"
+```
+
+add a `data_description` beside `data` in the same step:
+
+```json
+      "data_description": {
+        "supply_phases": "How many phases feed the house, not the charger. A three-phase meter reports surplus added up across all three, and a single-phase charger can only use one of them, so solar control will not arm until this is set."
+      }
+```
+
+and add a top-level `selector` block beside `options`:
+
+```json
+  "selector": {
+    "supply_phases": {
+      "options": {
+        "single": "Single-phase",
+        "three": "Three-phase"
+      }
+    }
+  }
+```
+
+Do the same in `custom_components/daze/translations/it.json`:
+`"supply_phases": "Alimentazione di rete"`, the options
+`"single": "Monofase"` and `"three": "Trifase"`, and the description:
+
+```json
+      "data_description": {
+        "supply_phases": "Quante fasi alimentano la casa, non il caricatore. Un contatore trifase riporta il surplus sommato sulle tre fasi e un caricatore monofase può usarne solo una, quindi il controllo solare non si attiva finché non è impostato."
+      }
+```
+
+- [ ] **Step 5: Tell the controller what was answered**
+
+In `custom_components/daze/solar_controller.py`, add a keyword to
+`SolarController.__init__`, beside the reserve Task 6 added:
+
+```python
+        supply_phases: str | None = None,
+```
+
+stored as `self._supply_phases = supply_phases`, and documented:
+
+```python
+            supply_phases: "single", "three", or None if the user has
+                not said. None refuses to arm rather than assuming:
+                the payload cannot tell us, and the wrong guess loads
+                one phase with a surplus measured across three.
+```
+
+In `custom_components/daze/__init__.py`, pass it when the controller is
+constructed:
+
+```python
+        supply_phases=entry.options.get(CONF_SUPPLY_PHASES),
+```
+
+and add `CONF_SUPPLY_PHASES` to the `from .const import (...)` block
+there.
+
+- [ ] **Step 6: Implement the one refusal**
 
 Add to `SolarController`:
 
 ```python
     @property
     def unsupported_reason(self) -> str | None:
-        """Explain why this setup cannot be followed, if it cannot.
+        """Explain why solar control cannot run here, if it cannot.
 
-        A three-phase supply feeding a single-phase charger reports
-        surplus netted across phases, most of which the charger cannot
-        reach. Following it would overload one phase.
+        One property with one answer, because every caller needs the
+        same one: the select for its availability and for refusing to
+        arm, the tick to stand down, the log line, and the README. The
+        spec asks three separate times for a refusal that explains
+        itself, and a boolean cannot.
+
+        Ordered cheapest and most fundamental first, so the message a
+        user sees names the thing they have to fix.
         """
-        data = self._coordinator.data or {}
+        if not self.configured:
+            return (
+                "both a grid import and a grid export sensor have to be "
+                "chosen in the integration's options"
+            )
 
-        supply_three_phase = bool(data.get("supplyGrid3F"))
-        charger_three_phase = bool(data.get("evseIsThreePhase"))
+        if self._supply_phases not in (
+            SUPPLY_PHASES_SINGLE,
+            SUPPLY_PHASES_THREE,
+        ):
+            return (
+                "the number of phases feeding the house has not been set "
+                "in the integration's options, and it cannot be read from "
+                "the charger"
+            )
 
-        if supply_three_phase and not charger_three_phase:
+        data = self._coordinator.data
+        if not data:
+            return "the charger has not reported yet"
+
+        if self._supply_phases == SUPPLY_PHASES_THREE and not bool(
+            data.get("evseIsThreePhase")
+        ):
             return (
                 "the supply is three-phase and the charger is single-phase, "
                 "so exported power may be on a phase it cannot use"
             )
 
+        if data.get("ecoModeEnabled"):
+            return "the charger's own eco mode is controlling it"
+
+        if data.get("schedules"):
+            return "the charger has a schedule set"
+
         return None
 ```
 
-In `async_tick`, immediately after the `SolarMode.OFF` check:
+Add `SUPPLY_PHASES_SINGLE` and `SUPPLY_PHASES_THREE` to the
+`from .const import (...)` block in `solar_controller.py`, creating it
+if the module does not import from `const` yet.
+
+An absent payload is a refusal, not a pass. `self._coordinator.data`
+is empty before the first successful poll, and reading that as "no
+phase mismatch, no eco mode, no schedule" would arm solar control on
+the strength of knowing nothing — the same mistake `_build_state`
+already avoids for `charger_reachable`.
+
+In `_async_evaluate`, immediately after the `SolarMode.OFF` check:
 
 ```python
         unsupported = self.unsupported_reason
         if unsupported is not None:
-            if not self._sensor_warning_logged:
-                self._sensor_warning_logged = True
+            if not self._unsupported_warning_logged:
+                self._unsupported_warning_logged = True
                 _LOGGER.warning("Solar control cannot run: %s", unsupported)
+            return
+
+        self._unsupported_warning_logged = False
+```
+
+with `self._unsupported_warning_logged = False` added to `__init__`.
+
+Its own flag, not `_sensor_warning_logged`. The two conditions are
+unrelated, and the reset that clears the sensor flag sits below this
+guard, where an unsupported setup never reaches it: sharing one flag
+means whichever warned first silences the other for the lifetime of
+the entry.
+
+- [ ] **Step 7: Log the rate limit at the level the spec asks for**
+
+The spec's error table says the rate limit is logged at **warning** and
+everything else at debug; every `nothing` decision currently goes to
+debug, the rate limit included, so the one condition a user needs to
+know about is the one they cannot see. In `_async_evaluate`, replace
+the `NOTHING` branch's log line:
+
+```python
+        if decision.action is SolarAction.NOTHING:
+            if state.commands_this_hour >= MAX_COMMANDS_PER_HOUR:
+                # The backstop is against bugs. If it is what is
+                # holding the charger back, something upstream is
+                # wrong and the log has to say so out loud.
+                _LOGGER.warning("Solar control: %s", decision.reason)
+            else:
+                _LOGGER.debug("Solar control: %s", decision.reason)
+            self._notify()
             return
 ```
 
-And seed the start time. Put it immediately after
-`self._track_thresholds(state, now)` and **outside** the
-`if self._mode is SolarMode.ACTIVE:` block that now wraps
-`self._check_ignored_start(now)`. Seeding must happen in every mode: a
-`simulate` dry run of a charge that is already running has to preview the
-stop, and under the `ACTIVE` gate it would instead report "the minimum
-run time has not elapsed" forever:
+Add `MAX_COMMANDS_PER_HOUR` to the `from .solar import (...)` block.
+
+- [ ] **Step 8: Seed the minimum-run clock, once per charge**
+
+Put this immediately after `self._track_thresholds(state, now, surplus)`
+and **outside** the `if self._mode is SolarMode.ACTIVE:` block that
+wraps `self._check_ignored_start(now)`. Seeding must happen in every
+mode: a `simulate` dry run of a charge that is already running has to
+preview the stop, and under the `ACTIVE` gate it would instead report
+"the minimum run time has not elapsed" forever:
 
 ```python
         # Timers begin at zero after a restart. A charge that is
@@ -2523,19 +3722,45 @@ run time has not elapsed" forever:
         # this the minimum run time reads as unelapsed and a healthy
         # charge could be stopped moments after boot.
         #
+        # Once per charging episode, not once per tick. _carry_out
+        # clears the minimum-run clock after a stop it *sent*, and
+        # "sent" includes one only queued for the background retry —
+        # where the charger is still charging. Re-seeding on the next
+        # tick would put the clock back, decide() would return STOP
+        # again, and it would do so every two minutes until the hourly
+        # backstop tripped forty minutes later. A stop that will not
+        # land is the background retry's business, and the spec says
+        # so: "hand to the existing background retry; do not retry
+        # here."
+        #
+        # The flag resets when the charge is observed to end, so the
+        # next one — including a charge the user starts by hand — is
+        # seeded in its turn. A flag that only ever set once would
+        # leave that later charge with a zero minimum-run clock for
+        # ever, and solar control could never stop it.
+        #
         # This seeds the minimum-run clock only. The draw-grace clock
         # is a separate attribute, set solely when this controller
         # issues a start of its own, and it must stay unset here: a
         # charge that was already running was never ours to judge, and
         # a charger sitting in waiting_for_ev at 0 W at boot would
         # otherwise arm an hour-long back-off on a healthy charge.
-        if state.charging and self._started_at is None:
-            self._started_at = now - MIN_RUN_SECONDS
+        if not state.charging:
+            self._charge_seeded = False
+        elif not self._charge_seeded:
+            self._charge_seeded = True
+            if self._started_at is None:
+                self._started_at = now - MIN_RUN_SECONDS
 ```
 
-Add `MIN_RUN_SECONDS` to the `from .solar import (...)` block.
+Add `self._charge_seeded = False` to `__init__`, and `MIN_RUN_SECONDS`
+to the `from .solar import (...)` block.
 
-- [ ] **Step 4: Make the select remember its mode**
+The inner `if self._started_at is None` is what protects a start this
+controller issued: `_carry_out` has already set the real time, and this
+must not overwrite it with one ten minutes in the past.
+
+- [ ] **Step 9: Make the select remember its mode**
 
 In `custom_components/daze/select.py`, change `DazeSolarControlSelect` to
 also inherit `RestoreEntity`:
@@ -2562,26 +3787,67 @@ And restore in `async_added_to_hass`, after the existing `super()` call:
             self._controller.mode = SolarMode(last.state)
 ```
 
-Also make `available` account for an unsupported setup:
+Also replace `available`, and the refusal Task 7 put in
+`async_select_option`, with the one property. Both asked a narrower
+question — "are the sensors set?" — and the answer is now "is there any
+reason this cannot run?":
 
 ```python
     @property
     def available(self) -> bool:
-        """Usable only with both sensors and a supply we can follow."""
-        return (
-            bool(self._controller.configured)
-            and self._controller.unsupported_reason is None
-        )
+        """Usable only where solar control could actually run."""
+        return self._controller.unsupported_reason is None
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+```python
+    async def async_select_option(self, option: str) -> None:
+        """Set the mode, refusing to arm where it cannot work.
 
-Run: `python3 tests/test_solar_controller.py`
-Expected: PASS, `0 failed`, with three more tests than the suite had
+        `available` is a hint for the dashboard. A service call or an
+        automation arrives here whatever the entity reports, so the
+        refusal has to be enforced in the method that acts — and
+        raised, not logged, because the caller asked for something and
+        is entitled to know it did not happen, and why.
+        """
+        from .solar_controller import SolarMode
+
+        if option != "off":
+            reason = self._controller.unsupported_reason
+            if reason is not None:
+                raise HomeAssistantError(
+                    f"Solar control cannot be armed: {reason}."
+                )
+
+        self._controller.mode = SolarMode(option)
+        self.async_write_ha_state()
+```
+
+Turning it **off** is never refused. A control that cannot be switched
+off because the charger is in eco mode would be worse than the problem.
+
+- [ ] **Step 10: Run the tests to verify they pass**
+
+Run:
+```bash
+python3 tests/test_solar_controller.py
+python3 tests/test_entities.py
+```
+Expected: PASS, `0 failed`, with nine more tests than the two files had
 before this task. The absolute count is deliberately not stated; see
 Task 5.
 
-- [ ] **Step 6: Lint and full suite**
+One existing test changes meaning and should be moved down a layer
+while you are here:
+`test_unknown_charging_status_does_not_assume_zero_draw` runs a full
+tick with `coordinator.data = {}`, which now stops at "the charger has
+not reported yet" before it ever reads a sensor. Its assertion still
+passes, for a reason that has nothing to do with what it is named
+after. Call `controller._read_surplus()` directly instead and assert
+that it returns `None`, the same way
+`test_no_coordinator_data_reads_as_not_reachable` already tests its
+own layer.
+
+- [ ] **Step 11: Lint and full suite**
 
 Run:
 ```bash
@@ -2590,19 +3856,30 @@ python3 tests/run_all.py
 ```
 Expected: `All checks passed!`, 0 failures.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
-git add custom_components/daze/solar_controller.py custom_components/daze/select.py tests/test_solar_controller.py
-git commit -m "feat: refuse unfollowable supplies, and survive a restart
+git add custom_components/daze/const.py custom_components/daze/config_flow.py custom_components/daze/strings.json custom_components/daze/translations/it.json custom_components/daze/__init__.py custom_components/daze/solar_controller.py custom_components/daze/select.py tests/test_solar_controller.py tests/test_entities.py
+git commit -m "feat: refuse setups solar control cannot follow, survive a restart
 
 A three-phase supply feeding a single-phase charger reports surplus
-netted across phases, most of which the charger cannot reach.
+netted across phases, most of which the charger cannot reach. The Daze
+payload does not say how many phases feed the house — its one phase
+field describes the charger — so the options flow asks, with no
+default, and solar control will not arm until it is answered.
+
+One property now answers 'can this run, and if not, why not', for the
+select's availability, its refusal to arm, the log line and the docs.
+Eco mode and a configured charger schedule are part of that answer, as
+the spec asks; previously they produced a decision of 'nothing' logged
+at debug and no other sign.
 
 Timers begin at zero after a Home Assistant restart, so a charge that
 was already running would read as having no elapsed run time and could
 be stopped moments after boot. A running charge now seeds its own
-start time.
+start time, once per charge rather than once per tick: re-seeding it
+after a stop that was queued but never landed would re-issue that stop
+every two minutes until the hourly backstop tripped.
 
 The control also remembers its mode across a restart.
 
@@ -2615,9 +3892,10 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `README.md`
 - Modify: `docs/solar-surplus-charging.md`
+- Modify: `custom_components/daze/manifest.json`
 
 **Interfaces:**
-- Consumes: the entity names from Task 6.
+- Consumes: the entity names from Task 7 and the refusals from Task 9.
 - Produces: nothing code depends on.
 
 - [ ] **Step 1: Document the entities in the README**
@@ -2625,15 +3903,22 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 In `README.md`, add to the Controls table:
 
 ```markdown
-| Select | `select.daze_homett_solar_control` | Solar control | `off` / `simulate` / `active` |
-| Number | `number.daze_homett_solar_reserve` | Solar reserve | Watts to leave for the house before the car gets any |
+| Select | `select.daze_solar_control` | Solar control | `off` / `simulate` / `active` |
+| Number | `number.daze_solar_reserve` | Solar reserve | Watts to leave for the house before the car gets any |
 ```
 
 And to the Sensors table:
 
 ```markdown
-| `sensor.daze_homett_solar_surplus` | Solar surplus | `power` | `measurement` | W |
+| `sensor.daze_solar_surplus` | Solar surplus | `power` | `measurement` | W |
 ```
+
+Every other row in those tables uses the bare `daze_` prefix —
+`number.daze_max_charging_current`, `select.daze_operation_mode` — and
+these must match, or an automation copied out of the README addresses
+an entity that does not exist. Confirm the real object IDs on a live
+install before publishing: the prefix follows the device name, and a
+renamed device changes it.
 
 - [ ] **Step 2: Add a Solar control section to the README**
 
@@ -2647,7 +3932,8 @@ the limit as production and load change, and stopping when there is not
 enough surplus to charge at all.
 
 1. In the integration's options, pick your **grid import** and **grid
-   export** power sensors.
+   export** power sensors, and say whether your **grid supply** is
+   single-phase or three-phase.
 2. Set **Solar control** to `simulate`. It decides and logs but sends
    nothing.
 3. Leave it for a day. The select's attributes show the surplus it sees
@@ -2659,7 +3945,31 @@ when surplus falls below that it stops rather than topping up from the
 grid.
 
 Changing the charging limit yourself — from the dashboard, or from your
-own automation — turns solar control off. It does not fight you.
+own automation — turns solar control off. Starting or stopping the
+charge by hand does the same. It does not fight you.
+
+### When the control is unavailable
+
+Solar control refuses to arm rather than guess, and says why in the
+log (`Solar control cannot run: …`). It is unavailable when:
+
+- **Both grid sensors are not set.** It has nothing to measure.
+- **The grid supply has not been declared.** The charger cannot tell
+  the integration how many phases feed the house, so you have to. A
+  three-phase meter reports surplus added up across all three phases;
+  a single-phase charger can only use one of them, so following that
+  figure would load one phase with all three phases' surplus. For the
+  same reason, a **three-phase supply with a single-phase charger is
+  refused outright** — see the YAML guide below if that is your setup.
+- **The charger's own eco mode is on, or it has a schedule set.**
+  Something else is already deciding when the car charges, and two
+  controllers fighting over one charger is worse than either alone.
+
+### The reserve
+
+**Solar reserve** is watts to leave for the house before the car gets
+any: set it to 500 and the car is only offered surplus above 500 W. It
+is saved with the integration's settings and survives a restart.
 
 For a version you build and tune yourself, see
 [docs/solar-surplus-charging.md](docs/solar-surplus-charging.md).
@@ -2668,7 +3978,9 @@ For a version you build and tune yourself, see
 - [ ] **Step 3: Bump the version**
 
 Modify `custom_components/daze/manifest.json`, setting `"version"` to
-`"0.2.0"`. This is the only task that touches it.
+`"0.2.0"`. This is the only task that touches it, and Step 5 commits it
+— an edit left in the working tree would ship a release announcing a
+version the manifest does not carry.
 
 Run: `python3 -c "import json; print(json.load(open('custom_components/daze/manifest.json'))['version'])"`
 Expected: `0.2.0`
@@ -2690,41 +4002,49 @@ Run: `python3 tests/run_all.py`
 Expected: 0 failures.
 
 ```bash
-git add README.md docs/solar-surplus-charging.md
+git add README.md docs/solar-surplus-charging.md custom_components/daze/manifest.json
 git commit -m "docs: document solar control
 
 Includes the simulate-first procedure, because a feature that starts
-and stops the car should be watched for a day before it is trusted.
+and stops the car should be watched for a day before it is trusted,
+and what makes the control unavailable, because a feature that refuses
+to arm has to say why somewhere a user will look.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 6: Push, and move the tag**
-
-```bash
-set -a; . ./.env; set +a
-ASK=$(mktemp /tmp/askpass.XXXXXX); chmod 700 "$ASK"
-printf '#!/bin/sh\ncase "$1" in\n  *sername*) printf "%%s\\n" "$GIT_USER" ;;\n  *assword*) printf "%%s\\n" "$GITHUB_PAT" ;;\nesac\n' > "$ASK"
-GIT_USER=tarrinho GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$ASK" \
-  git -c credential.helper= push origin main 2>&1 | sed 's/gh[pousr]_[A-Za-z0-9_]*/[REDACTED]/g' | tail -1
-git tag -f -a v0.1.6 -m "Release 0.1.6
-
-Re-pointed at the current code. This tag tracks main.
-" >/dev/null
-GIT_USER=tarrinho GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$ASK" \
-  git -c credential.helper= push --force origin v0.1.6 2>&1 | sed 's/gh[pousr]_[A-Za-z0-9_]*/[REDACTED]/g' | tail -1
-rm -f "$ASK"; unset GITHUB_PAT GIT_USER
-```
-
-Expected: both pushes report success, and `main` and `v0.1.6` point at the same commit.
+This is the last step of the plan. Do not push, tag or force-push:
+this work is on the `solar-control` branch, `main` is several tasks
+behind it, and publishing is the operator's call once the branch has
+been reviewed and merged. A push from here would move the release tag
+onto a `main` that does not contain the feature.
 
 ---
 
 ## After the plan
 
 Solar control ships **off**. Nothing changes for an existing install
-until the user picks two sensors and moves the select.
+until the user picks two sensors, declares their supply, and moves the
+select.
 
 The first real validation is a day in `simulate` against actual
 production. That is the step this plan cannot do, and the one that
 decides whether the constants in `solar.py` are right for the site.
+
+Then the operator reviews the branch, merges it, and moves the release
+tag. No task does that.
+
+Two things are deliberately left undone and are worth a follow-up:
+
+- `sensor_catalog.py:243` labels `evseIsThreePhase` "Three-Phase
+  Supply", while `payload.py:308` reads the same field as the
+  *charger's* phase count. One of the two is wrong. Renaming the
+  entity breaks existing dashboards, so it is not folded into this
+  work; Task 9's option is named for the supply explicitly to avoid
+  inheriting the confusion.
+- A stop that is queued for the background retry and never lands
+  leaves the charge running with solar control unable to re-issue it
+  until the charge ends by other means. That is the spec's rule ("hand
+  to the existing background retry; do not retry here") working as
+  written, and re-issuing every tick is worse, but neither is
+  obviously right and the case deserves its own decision.
