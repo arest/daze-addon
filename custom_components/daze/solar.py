@@ -269,11 +269,14 @@ class SurplusSmoother:
             now: A monotonic timestamp in seconds.
 
         """
-        # A clock that goes backwards, from a restart or a correction,
-        # would otherwise leave future-dated samples wedged in the
-        # window forever.
+        # A monotonic clock should never go backwards, but if a caller
+        # passes wall-clock time instead, drop only the future-dated
+        # samples rather than discarding the entire history and losing
+        # the smoothing this class exists to provide.
         if self._samples and now < self._samples[-1][0]:
-            self._samples.clear()
+            self._samples = [
+                sample for sample in self._samples if sample[0] <= now
+            ]
 
         self._samples.append((now, value))
 

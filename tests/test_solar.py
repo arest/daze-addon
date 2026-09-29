@@ -318,11 +318,30 @@ def test_smoother_discards_readings_outside_the_window() -> None:
 
 
 def test_smoother_survives_a_clock_that_goes_backwards() -> None:
-    """A restart or a clock correction must not wedge it."""
+    """A restart or a clock correction must not wedge it.
+
+    A future-dated sample must be dropped, not preserved forever in the
+    average. This test adds good history, then a far-future sample, then
+    jumps the clock backward. The future sample must be discarded while
+    keeping the good history that is still relevant.
+    """
     smoother = solar.SurplusSmoother()
+    # Build up good history at early timestamps.
     smoother.add(1000, now=100.0)
-    smoother.add(2000, now=50.0)
-    assert smoother.value() is not None
+    smoother.add(2000, now=200.0)
+    # Add a sample far in the future (beyond the window).
+    smoother.add(9999, now=400.0)
+    # Clock jumps backward. The sample at 400 is now future-dated relative
+    # to now=250, and the backward-jump fix must drop it. The good history
+    # at 100 and 200 should survive because they are <= 250.
+    smoother.add(3000, now=250.0)
+    # cutoff = 250 - 300 = -50. Samples at 100, 200, 250 all >= -50, so
+    # they survive cutoff filtering. The sample at 400 is > 250, so the
+    # backward-jump fix removes it before the cutoff filter runs.
+    # Expected value: (1000 + 2000 + 3000) / 3 = 2000.
+    # Without the fix, the sample at 400 would be preserved and the
+    # average would be (1000 + 2000 + 9999 + 3000) / 4 = 4000.25.
+    assert smoother.value() == 2000
 
 
 def _main() -> int:
