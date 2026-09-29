@@ -1227,12 +1227,21 @@ def test_disarming_clears_the_clocks_a_rearm_would_misread() -> None:
     12:01 is judged at 14:00 against a car that has long since
     finished, arming a 60-minute back-off for a start nobody is
     waiting on.
+
+    _collapsed_since must go with it for the same reason, and the cost
+    of missing it is worse: disarmed during a collapse and re-armed an
+    hour later with the raw reading still below the floor, a surviving
+    anchor lets _track_thresholds set _below_since an hour in the past,
+    seconds_below_threshold is already past the 600s stop delay, and
+    the very first tick issues an immediate STOP on a charge the user
+    just re-armed solar control to manage.
     """
     controller, _, _ = build()
     controller.mode = controller_module.SolarMode.ACTIVE
     controller._start_issued_at = 100.0
     controller._backoff_until = 1e9
     controller._started_at = 100.0
+    controller._collapsed_since = 100.0
 
     controller.disarm("the charging limit was set manually")
 
@@ -1240,6 +1249,7 @@ def test_disarming_clears_the_clocks_a_rearm_would_misread() -> None:
     assert controller._start_issued_at is None
     assert controller._backoff_until == 0.0
     assert controller._started_at is None
+    assert controller._collapsed_since is None
 
 
 def test_disarming_clears_the_threshold_timers_too() -> None:
@@ -1548,6 +1558,232 @@ def test_async_start_still_clears_the_stopped_flag() -> None:
 
     assert controller._stopped is False
     assert len(SCHEDULED) == 1
+
+
+def test_async_stop_cancels_the_sensor_listener() -> None:
+    """async_stop must cancel the sensor-change subscription itself,
+    not only the tick timer — otherwise a stopped controller goes on
+    reacting to every sensor update indefinitely, the tick's own
+    _stopped re-arm check notwithstanding.
+    """
+    controller, _, _ = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+    SCHEDULED.clear()
+
+    asyncio.run(controller.async_start())
+
+    cancelled: list[bool] = []
+    controller._cancel_listener = lambda: cancelled.append(True)
+
+    asyncio.run(controller.async_stop())
+
+    assert cancelled == [True], "async_stop did not cancel the listener"
+    assert controller._cancel_listener is None
+
+
+def test_a_sensor_event_after_stop_does_not_evaluate() -> None:
+    """async_stop cancels the sensor subscription, but not atomically
+    with setting _stopped — an event already dispatched can still land
+    here in the gap. async_sensor_changed must honour _stopped itself,
+    mirroring _schedule_tick's own re-arm check, or that race runs a
+    full evaluation — and can issue a command — on a controller that
+    believes it has been torn down.
+
+    The clock is advanced past the fast path's own one-tick spacing
+    guard before the event arrives, so nothing but the _stopped check
+    can be what prevents the evaluation this test looks for.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [26_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        asyncio.run(controller.async_tick())
+        before = len(coordinator.api_client.calls)
+
+        asyncio.run(controller.async_stop())
+        assert controller._stopped is True
+
+        clock[0] += solar.TICK_SECONDS + 1
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_sensor_changed())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert len(coordinator.api_client.calls) == before, (
+        "a sensor event evaluated and commanded after the controller "
+        "was stopped"
+    )
+    assert controller._collapsed_since is None, (
+        "the anchor was set on a torn-down controller"
+    )
+
+
+def test_a_fresh_collapse_within_one_tick_still_waits_for_the_spacing_guard() -> (
+    None
+):
+    """The latch stops a *sustained* collapse from re-evaluating on
+    every sensor update, but it is cleared the instant surplus
+    recovers — so it cannot protect against a raw reading oscillating
+    across the floor faster than one tick. Each down-crossing there is
+    a fresh collapse, latched and re-armed in the same breath, and only
+    the minimum-spacing guard is left to stop each one running a full
+    evaluation — the brief's own "six evaluations a minute and the
+    hourly backstop spent in about three".
+
+    Both the recovery and the second collapse land well inside one
+    tick of the first evaluation, so only the spacing guard — not the
+    latch, which the recovery has already cleared — can be what holds
+    the command count flat across them.
+    """
+    controller, coordinator, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [27_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
+        asyncio.run(controller.async_tick())
+
+        clock[0] += solar.TICK_SECONDS + 1
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_sensor_changed())  # evaluates now
+
+        after_first = len(coordinator.api_client.calls)
+
+        # A kettle-fast oscillation: recovers, then collapses again,
+        # both well inside the one tick the spacing guard enforces.
+        clock[0] += 5
+        hass.states.set(
+            "sensor.grid_import", "0", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "5000", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_sensor_changed())
+        assert controller._collapsed_since is None, "did not re-arm"
+
+        clock[0] += 5
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_sensor_changed())
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+    assert len(coordinator.api_client.calls) == after_first, (
+        "a fresh collapse inside one tick evaluated again, unguarded "
+        "by the minimum-spacing check"
+    )
+
+
+def test_a_tick_only_recovery_clears_the_collapse_anchor() -> None:
+    """_track_thresholds must clear _collapsed_since itself once the
+    raw reading recovers, not rely on async_sensor_changed to have
+    done it first: a recovery observed only by an ordinary tick, with
+    no sensor event in between, must still let go of the anchor.
+
+    The consequence of losing this is worse than a wrong stop delay:
+    with _collapsed_since stuck non-None, "available >= floor_w and
+    self._collapsed_since is None" can never be taken again,
+    _above_since is reset to None on every evaluation instead,
+    seconds_above_threshold never reaches the start delay, and the
+    controller can never start a charge again for as long as the
+    process runs.
+    """
+    controller, _, hass = build(NOT_CHARGING_DATA)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [28_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_tick())  # collapses, through a tick
+        assert controller._collapsed_since is not None
+
+        hass.states.set(
+            "sensor.grid_import", "0", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "5000", {"unit_of_measurement": "W"}
+        )
+        clock[0] += solar.TICK_SECONDS
+        asyncio.run(controller.async_tick())  # recovers, through a tick
+
+        assert controller._collapsed_since is None, (
+            "the anchor survived a recovery observed only by a tick"
+        )
+        assert controller._above_since is not None, (
+            "above-threshold timing never resumed after a tick-only "
+            "recovery"
+        )
+    finally:
+        controller_module.time.monotonic = original_monotonic
+
+
+def test_a_blind_tick_does_not_reset_the_fast_paths_spacing_clock() -> None:
+    """_last_evaluation is the fast path's own spacing clock. A tick
+    that could not read its sensors observed nothing, so it must not
+    reset that clock anyway — doing so defers a genuine collapse a
+    full tick on the strength of a cycle that never actually looked.
+    """
+    controller, _, hass = build()
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    clock = [29_000_000.0]
+    original_monotonic = controller_module.time.monotonic
+    controller_module.time.monotonic = lambda: clock[0]
+    try:
+        asyncio.run(controller.async_tick())  # a real evaluation
+
+        # Just past one tick's width: a real collapse landing here
+        # should be free to evaluate immediately, not deferred on the
+        # strength of the blind tick that follows.
+        clock[0] += solar.TICK_SECONDS + 1
+        blind_at = clock[0]
+        hass.states.set("sensor.grid_export", "unavailable")
+        asyncio.run(controller.async_tick())  # observes nothing
+
+        clock[0] += 1
+        collapse_at = clock[0]
+        hass.states.set(
+            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
+        )
+        hass.states.set(
+            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+        )
+        asyncio.run(controller.async_sensor_changed())
+
+        assert controller._last_evaluation != blind_at, (
+            "the blind tick's own timestamp reset the spacing clock"
+        )
+        assert controller._last_evaluation == collapse_at, (
+            "a collapse just past one tick's width was deferred anyway"
+        )
+    finally:
+        controller_module.time.monotonic = original_monotonic
 
 
 def _main() -> int:

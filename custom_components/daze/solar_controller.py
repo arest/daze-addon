@@ -336,7 +336,6 @@ class SolarController:
             return
 
         now = time.monotonic()
-        self._last_evaluation = now
         surplus = self._read_surplus()
 
         if surplus is None:
@@ -358,8 +357,14 @@ class SolarController:
                     "Solar control cannot read its grid sensors; doing "
                     "nothing until they report"
                 )
+            # _last_evaluation is the fast path's spacing clock, and
+            # this evaluation observed nothing: leaving it unset here
+            # means a genuine collapse in the following TICK_SECONDS is
+            # not deferred a full tick on the strength of a cycle that
+            # never actually looked.
             return
 
+        self._last_evaluation = now
         self._sensor_warning_logged = False
         self._smoother.add(surplus, now)
 
@@ -415,7 +420,13 @@ class SolarController:
         on every increase would rewrite the limit constantly against a
         charger that takes seconds to apply a change.
         """
-        if self._mode is SolarMode.OFF:
+        if self._mode is SolarMode.OFF or self._stopped:
+            # Mirrors _schedule_tick's own re-arm check: async_stop
+            # cancels this subscription, but does not do so atomically
+            # with setting the flag, so an event already dispatched can
+            # still arrive here in the gap. Without this, that race
+            # runs a full evaluation — and can issue a command — on a
+            # controller that believes it has been torn down.
             return
 
         surplus = self._read_surplus()
