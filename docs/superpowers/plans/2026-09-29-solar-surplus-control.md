@@ -2516,6 +2516,13 @@ And seed the start time, immediately before `self._check_ignored_start(now)`:
         # already running has, by definition, been running: without
         # this the minimum run time reads as unelapsed and a healthy
         # charge could be stopped moments after boot.
+        #
+        # This seeds the minimum-run clock only. The draw-grace clock
+        # is a separate attribute, set solely when this controller
+        # issues a start of its own, and it must stay unset here: a
+        # charge that was already running was never ours to judge, and
+        # a charger sitting in waiting_for_ev at 0 W at boot would
+        # otherwise arm an hour-long back-off on a healthy charge.
         if state.charging and self._started_at is None:
             self._started_at = now - MIN_RUN_SECONDS
 ```
