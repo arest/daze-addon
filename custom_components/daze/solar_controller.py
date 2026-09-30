@@ -179,6 +179,7 @@ class SolarController:
         self._command_times: list[float] = []
         self._sensor_warning_logged = False
         self._unsupported_warning_logged = False
+        self._limit_warning_logged = False
 
     # ------------------------------------------------------------------
     # Public surface
@@ -496,6 +497,22 @@ class SolarController:
             self._collapsed_since = None
             return
 
+        if self._current_limit_ma() is None:
+            # The surplus reading was real, so the threshold clocks keep
+            # what they have earned — unlike the blind-sensor path
+            # above, this cycle did observe the surplus. What it cannot
+            # observe is the charger's own limit, and every decision
+            # from here compares a target against it.
+            if not self._limit_warning_logged:
+                self._limit_warning_logged = True
+                _LOGGER.warning(
+                    "Solar control cannot read the charger's own "
+                    "charging limit; doing nothing until it reports"
+                )
+            return
+
+        self._limit_warning_logged = False
+
         state = self._build_state(smoothed, now)
         self._track_thresholds(state, now, surplus)
 
@@ -724,13 +741,33 @@ class SolarController:
             car_draw_w=car_w, export_w=export_w, import_w=import_w
         )
 
+    def _current_limit_ma(self) -> float | None:
+        """The charger's own limit in milliamps, or None if unknown.
+
+        Absent and zero are different facts. The limit feeds
+        `current_limit_w`, which `decide()` compares against the target
+        across the 300 W deadband: read as 0 mA, an unknown limit makes
+        every target look like a large change and produces a SET on the
+        first tick, spending one of the twenty hourly commands to
+        re-assert a limit that was probably already correct.
+        """
+        return _coerce_float(
+            (self._coordinator.data or {}).get(
+                "maxExternalChargingCurrentInMilliAmps"
+            )
+        )
+
     def _build_state(self, smoothed: float, now: float) -> SolarState:
         """Assemble everything the decision depends on."""
         data = self._coordinator.data or {}
 
-        limit_ma = _coerce_float(
-            data.get("maxExternalChargingCurrentInMilliAmps")
-        ) or 0.0
+        # 0.0 here is a structural placeholder, not a reading. The live
+        # path cannot reach it: _async_evaluate calls
+        # _current_limit_ma() and skips the cycle when the charger has
+        # not reported a limit, precisely so an unknown never enters
+        # the deadband comparison as zero. Tests that call _build_state
+        # directly supply their own payload.
+        limit_ma = self._current_limit_ma() or 0.0
         charging = bool(is_charge_enabled(data))
         # Not "schedules": that key is a list, which payload._scalars
         # drops from every source merge_payload flattens, so it never

@@ -2491,6 +2491,34 @@ def test_i3_the_backoff_does_not_suppress_a_stop_on_a_car_that_is_drawing() -> (
     )
 
 
+def test_an_unknown_charging_limit_skips_the_cycle() -> None:
+    """A limit the charger has not reported is not a limit of zero.
+
+    current_limit_w is what decide() compares the target against across
+    the 300 W deadband. Read as 0 mA, every target looks like a large
+    change, so the first tick issues a SET to re-assert a limit that
+    was most likely already correct — spending one of the twenty
+    commands an hour on an unknown.
+
+    Asserts what was observed rather than only what was sent: with this
+    fixture the surplus does reach the smoother, so `calls == []` alone
+    would also pass if the cycle had run and merely decided nothing.
+    """
+    data = dict(CHARGING_DATA)
+    del data["maxExternalChargingCurrentInMilliAmps"]
+    controller, coordinator, _ = build(data)
+    controller.mode = controller_module.SolarMode.ACTIVE
+
+    asyncio.run(controller.async_tick())
+
+    assert coordinator.api_client.calls == [], (
+        "a cycle ran against an unknown charging limit"
+    )
+    assert controller.last_decision is None, (
+        "the cycle reached decide() with no known charging limit"
+    )
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [
