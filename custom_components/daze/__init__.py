@@ -102,7 +102,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Register update listener for config entry changes
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    entry.add_update_listener(_async_update_listener)
 
     # Register services
     _async_register_services(hass, entry, coordinator)
