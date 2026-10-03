@@ -107,8 +107,7 @@ class SolarController:
         self,
         hass: HomeAssistant,
         coordinator: DazeDataUpdateCoordinator,
-        import_entity: str | None,
-        export_entity: str | None,
+        grid_power_entity: str | None,
         reserve_w: float = 0.0,
         supply_phases: str | None = None,
     ) -> None:
@@ -119,10 +118,10 @@ class SolarController:
         opt-in defaults to simulate the first time it does.
 
         Args:
-            hass: Used to read the grid sensors and schedule ticks.
+            hass: Used to read the grid sensor and schedule ticks.
             coordinator: Source of charger state and the API client.
-            import_entity: Grid import power sensor, or None.
-            export_entity: Grid export power sensor, or None.
+            grid_power_entity: Signed net-grid power sensor (positive
+                = import from grid, negative = export to grid), or None.
             reserve_w: Watts to leave for the house, restored from the
                 config entry's options. Held there rather than only in
                 memory: a reserve that returns to zero on every restart
@@ -136,8 +135,7 @@ class SolarController:
         """
         self._hass = hass
         self._coordinator = coordinator
-        self._import_entity = import_entity
-        self._export_entity = export_entity
+        self._grid_power_entity = grid_power_entity
         self._supply_phases = supply_phases
 
         self._mode = SolarMode.OFF
@@ -292,8 +290,8 @@ class SolarController:
 
     @property
     def configured(self) -> bool:
-        """Whether both grid sensors have been chosen."""
-        return bool(self._import_entity and self._export_entity)
+        """Whether the grid power sensor has been chosen."""
+        return bool(self._grid_power_entity)
 
     @property
     def unsupported_reason(self) -> str | None:
@@ -310,8 +308,8 @@ class SolarController:
         """
         if not self.configured:
             return (
-                "both a grid import and a grid export sensor have to be "
-                "chosen in the integration's options"
+                "a grid power sensor has to be chosen in the "
+                "integration's options"
             )
 
         if self._supply_phases not in (
@@ -374,26 +372,20 @@ class SolarController:
         return _remove
 
     async def async_start(self) -> None:
-        """Begin ticking, and watch the grid sensors for a collapse."""
+        """Begin ticking, and watch the grid sensor for a collapse."""
         # Keep this. async_stop sets the flag to prevent a tick already
         # in flight from re-arming itself, and a controller started
         # again after a stop would otherwise never tick at all.
         self._stopped = False
         self._schedule_tick()
 
-        entities = [
-            entity
-            for entity in (self._import_entity, self._export_entity)
-            if entity
-        ]
-
-        if entities:
+        if self._grid_power_entity:
 
             async def _changed(_event: Any) -> None:
                 await self.async_sensor_changed()
 
             self._cancel_listener = async_track_state_change_event(
-                self._hass, entities, _changed
+                self._hass, [self._grid_power_entity], _changed
             )
 
     async def async_stop(self) -> None:
@@ -476,8 +468,8 @@ class SolarController:
             if not self._sensor_warning_logged:
                 self._sensor_warning_logged = True
                 _LOGGER.warning(
-                    "Solar control cannot read its grid sensors; doing "
-                    "nothing until they report"
+                    "Solar control cannot read its grid sensor; doing "
+                    "nothing until it reports"
                 )
             # _last_evaluation is the fast path's spacing clock, and
             # this evaluation observed nothing: leaving it unset here
@@ -725,11 +717,10 @@ class SolarController:
         return 0.0 if is_charge_enabled(data) is False else None
 
     def _read_surplus(self) -> float | None:
-        """Compute surplus from the grid sensors and the car's draw."""
-        import_w = self._read_power(self._import_entity)
-        export_w = self._read_power(self._export_entity)
+        """Compute surplus from the grid sensor and the car's draw."""
+        grid_w = self._read_power(self._grid_power_entity)
 
-        if import_w is None or export_w is None:
+        if grid_w is None:
             return None
 
         data = self._coordinator.data or {}
@@ -738,7 +729,7 @@ class SolarController:
             return None
 
         return compute_surplus(
-            car_draw_w=car_w, export_w=export_w, import_w=import_w
+            car_draw_w=car_w, grid_power_w=grid_w
         )
 
     def _current_limit_ma(self) -> float | None:

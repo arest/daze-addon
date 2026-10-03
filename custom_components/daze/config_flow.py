@@ -24,8 +24,7 @@ from .const import (
     CONF_EMAIL,
     CONF_EVSE_NAME,
     CONF_FIRMWARE_VERSION,
-    CONF_GRID_EXPORT_SENSOR,
-    CONF_GRID_IMPORT_SENSOR,
+    CONF_GRID_POWER_SENSOR,
     CONF_NETWORK_NAME,
     CONF_NETWORK_UID,
     CONF_POLL_INTERVAL,
@@ -131,8 +130,9 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            access_token = user_input[CONF_ACCESS_TOKEN]
-            refresh_token = user_input[CONF_REFRESH_TOKEN]
+            # Strip pasted whitespace/newlines and quotes.
+            access_token = user_input[CONF_ACCESS_TOKEN].strip().strip('"')
+            refresh_token = user_input[CONF_REFRESH_TOKEN].strip().strip('"')
 
             try:
                 info = await _validate_tokens(
@@ -372,15 +372,15 @@ class DazeOptionsFlowHandler(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Let the user choose the poll interval and the grid sensors.
+        """Let the user choose the poll interval and the grid sensor.
 
         Faster polling makes the entities more responsive at the cost
         of more requests against the Daze cloud API. The entry reloads
         on save, so the new interval takes effect immediately.
 
-        The two grid sensors feed solar surplus control and are
-        optional: leaving them empty is a supported configuration, and
-        solar control simply refuses to arm without them.
+        The single signed grid power sensor feeds solar surplus control
+        and is optional: leaving it empty is a supported configuration,
+        and solar control simply refuses to arm without it.
         """
         if user_input is not None:
             # Carry forward only the one key this form does not own —
@@ -391,7 +391,7 @@ class DazeOptionsFlowHandler(OptionsFlow):
             # with no default, so clearing one in the frontend omits it
             # from user_input rather than submitting an empty value; a
             # blanket merge would read that omission as "unchanged" and
-            # silently restore the stale value, making the sensors
+            # silently restore the stale value, making the sensor
             # impossible to clear once set — the spec calls empty a
             # supported configuration.
             data = dict(user_input)
@@ -418,21 +418,11 @@ class DazeOptionsFlowHandler(OptionsFlow):
                     vol.Range(min=MIN_POLL_INTERVAL, max=MAX_POLL_INTERVAL),
                 ),
                 # Optional so the integration works without solar. Solar
-                # control refuses to leave "off" until both are set.
+                # control refuses to leave "off" until the sensor is set.
                 vol.Optional(
-                    CONF_GRID_IMPORT_SENSOR,
+                    CONF_GRID_POWER_SENSOR,
                     description={
-                        "suggested_value": options.get(CONF_GRID_IMPORT_SENSOR)
-                    },
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        domain="sensor", device_class="power"
-                    )
-                ),
-                vol.Optional(
-                    CONF_GRID_EXPORT_SENSOR,
-                    description={
-                        "suggested_value": options.get(CONF_GRID_EXPORT_SENSOR)
+                        "suggested_value": options.get(CONF_GRID_POWER_SENSOR)
                     },
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(

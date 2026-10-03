@@ -17,7 +17,6 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_DIR = ROOT / "custom_components" / "daze"
 
-
 def _load(name: str, filename: str) -> Any:
     """Load a single integration module without Home Assistant."""
     spec = importlib.util.spec_from_file_location(name, PACKAGE_DIR / filename)
@@ -27,9 +26,7 @@ def _load(name: str, filename: str) -> Any:
     spec.loader.exec_module(module)
     return module
 
-
 solar = _load("daze_solar_under_test", "solar.py")
-
 
 def state(**overrides: Any) -> Any:
     """Build a SolarState that is healthy unless overridden.
@@ -60,11 +57,9 @@ def state(**overrides: Any) -> Any:
     defaults.update(overrides)
     return solar.SolarState(**defaults)
 
-
 # ------------------------------------------------------------------
 # Guards, in table order
 # ------------------------------------------------------------------
-
 
 def test_unreachable_charger_does_nothing() -> None:
     """A charger that cannot answer must never imply an absence of
@@ -74,7 +69,6 @@ def test_unreachable_charger_does_nothing() -> None:
     assert decision.action is solar.SolarAction.NOTHING
     assert "reachable" in decision.reason
 
-
 def test_pending_command_does_nothing() -> None:
     """Issuing another command while one is queued stacks requests
     against a charger that is already not answering."""
@@ -82,13 +76,11 @@ def test_pending_command_does_nothing() -> None:
     assert decision.action is solar.SolarAction.NOTHING
     assert "pending" in decision.reason
 
-
 def test_vendor_eco_mode_does_nothing() -> None:
     """Solar Boost is a competing controller on the same setting."""
     decision = solar.decide(state(eco_mode_on=True))
     assert decision.action is solar.SolarAction.NOTHING
     assert "eco" in decision.reason.lower()
-
 
 def test_charger_schedule_does_nothing() -> None:
     """A schedule decides when the car charges; so does this."""
@@ -96,12 +88,10 @@ def test_charger_schedule_does_nothing() -> None:
     assert decision.action is solar.SolarAction.NOTHING
     assert "schedule" in decision.reason.lower()
 
-
 def test_no_car_connected_does_not_start() -> None:
     """Starting with nothing plugged in only produces errors."""
     decision = solar.decide(state(car_connected=False))
     assert decision.action is solar.SolarAction.NOTHING
-
 
 def test_backoff_blocks_a_restart() -> None:
     """A finished car stops drawing while surplus is still high. Without
@@ -109,7 +99,6 @@ def test_backoff_blocks_a_restart() -> None:
     decision = solar.decide(state(backoff_remaining_s=1800))
     assert decision.action is solar.SolarAction.NOTHING
     assert "backing off" in decision.reason
-
 
 def test_rate_limit_blocks_everything() -> None:
     """A hard ceiling regardless of what the logic wants, so a bug
@@ -120,11 +109,9 @@ def test_rate_limit_blocks_everything() -> None:
     assert decision.action is solar.SolarAction.NOTHING
     assert "rate limit" in decision.reason
 
-
 # ------------------------------------------------------------------
 # Stopping
 # ------------------------------------------------------------------
-
 
 def test_stops_when_surplus_below_floor_for_long_enough() -> None:
     """Pure solar: below the charger's floor it cannot charge at all."""
@@ -138,7 +125,6 @@ def test_stops_when_surplus_below_floor_for_long_enough() -> None:
     )
     assert decision.action is solar.SolarAction.STOP
 
-
 def test_does_not_stop_before_the_delay() -> None:
     """A passing cloud is not a reason to interrupt the car."""
     decision = solar.decide(
@@ -150,7 +136,6 @@ def test_does_not_stop_before_the_delay() -> None:
         )
     )
     assert decision.action is not solar.SolarAction.STOP
-
 
 def test_minimum_run_time_outranks_a_stop() -> None:
     """Prevents cycling when surplus hovers at the threshold."""
@@ -165,11 +150,9 @@ def test_minimum_run_time_outranks_a_stop() -> None:
     assert decision.action is solar.SolarAction.NOTHING
     assert "minimum run" in decision.reason
 
-
 # ------------------------------------------------------------------
 # Starting
 # ------------------------------------------------------------------
-
 
 def test_starts_when_surplus_sustained() -> None:
     decision = solar.decide(
@@ -178,11 +161,9 @@ def test_starts_when_surplus_sustained() -> None:
     assert decision.action is solar.SolarAction.START
     assert decision.target_watts == 4000
 
-
 def test_does_not_start_before_the_delay() -> None:
     decision = solar.decide(state(surplus_w=4000, seconds_above_threshold=60))
     assert decision.action is solar.SolarAction.NOTHING
-
 
 def test_does_not_start_below_the_floor() -> None:
     decision = solar.decide(
@@ -190,11 +171,9 @@ def test_does_not_start_below_the_floor() -> None:
     )
     assert decision.action is solar.SolarAction.NOTHING
 
-
 # ------------------------------------------------------------------
 # Following
 # ------------------------------------------------------------------
-
 
 def test_follows_surplus_when_the_change_is_worth_making() -> None:
     decision = solar.decide(
@@ -203,7 +182,6 @@ def test_follows_surplus_when_the_change_is_worth_making() -> None:
     assert decision.action is solar.SolarAction.SET
     assert decision.target_watts == 5000
 
-
 def test_ignores_a_change_inside_the_deadband() -> None:
     """Without this the limit is rewritten every tick for no benefit."""
     decision = solar.decide(
@@ -211,14 +189,12 @@ def test_ignores_a_change_inside_the_deadband() -> None:
     )
     assert decision.action is solar.SolarAction.NOTHING
 
-
 def test_target_is_clamped_to_the_ceiling() -> None:
     """10 kW of surplus does not make a 32 A charger draw 10 kW."""
     decision = solar.decide(
         state(charging=True, surplus_w=10000, current_limit_w=1600)
     )
     assert decision.target_watts == 7400
-
 
 def test_target_is_clamped_to_the_floor() -> None:
     """Calls target_watts() directly, not through decide().
@@ -234,14 +210,12 @@ def test_target_is_clamped_to_the_floor() -> None:
     target = solar.target_watts(state(surplus_w=500, floor_w=1600))
     assert target == 1600
 
-
 def test_reserve_is_subtracted_before_anything_else() -> None:
     """The house gets its share first."""
     decision = solar.decide(
         state(charging=True, surplus_w=5000, reserve_w=2000, current_limit_w=1600)
     )
     assert decision.target_watts == 3000
-
 
 def test_reserve_can_push_below_the_floor_and_stop() -> None:
     decision = solar.decide(
@@ -255,7 +229,6 @@ def test_reserve_can_push_below_the_floor_and_stop() -> None:
     )
     assert decision.action is solar.SolarAction.STOP
 
-
 def test_every_decision_carries_a_reason() -> None:
     """The reason becomes the log line and a visible attribute. An
     autonomous feature that acts silently cannot be debugged."""
@@ -268,39 +241,32 @@ def test_every_decision_carries_a_reason() -> None:
         assert decision.reason
         assert decision.reason.strip() == decision.reason
 
-
 # ------------------------------------------------------------------
 # Surplus arithmetic
 # ------------------------------------------------------------------
-
 
 def test_surplus_adds_back_the_cars_own_draw() -> None:
     """The car's consumption is not surplus that disappeared; it is
     surplus already in use. Without this term the controller reads its
     own draw as a deficit and winds itself down to zero."""
-    assert solar.compute_surplus(car_draw_w=3000, export_w=0, import_w=0) == 3000
-
+    assert solar.compute_surplus(car_draw_w=3000, grid_power_w=0) == 3000
 
 def test_surplus_counts_export() -> None:
-    assert solar.compute_surplus(car_draw_w=0, export_w=4000, import_w=0) == 4000
-
+    assert solar.compute_surplus(car_draw_w=0, grid_power_w=-4000) == 4000
 
 def test_surplus_subtracts_import() -> None:
     """Importing while charging means the car is over-drawing."""
     assert (
-        solar.compute_surplus(car_draw_w=3000, export_w=0, import_w=1000) == 2000
+        solar.compute_surplus(car_draw_w=3000, grid_power_w=1000) == 2000
     )
-
 
 def test_surplus_never_goes_negative() -> None:
     """A negative surplus is not meaningful to the caller; zero is."""
-    assert solar.compute_surplus(car_draw_w=0, export_w=0, import_w=5000) == 0
-
+    assert solar.compute_surplus(car_draw_w=0, grid_power_w=5000) == 0
 
 def test_smoother_reports_nothing_until_it_has_data() -> None:
     smoother = solar.SurplusSmoother()
     assert smoother.value() is None
-
 
 def test_smoother_averages_its_window() -> None:
     smoother = solar.SurplusSmoother()
@@ -308,14 +274,12 @@ def test_smoother_averages_its_window() -> None:
         smoother.add(reading, now=float(index))
     assert smoother.value() == 2000
 
-
 def test_smoother_discards_readings_outside_the_window() -> None:
     """Otherwise this morning's surplus still influences this evening."""
     smoother = solar.SurplusSmoother()
     smoother.add(9999, now=0.0)
     smoother.add(1000, now=solar.SMOOTHING_SECONDS + 1)
     assert smoother.value() == 1000
-
 
 def test_smoother_survives_a_clock_that_goes_backwards() -> None:
     """A restart or a clock correction must not wedge it.
@@ -343,7 +307,6 @@ def test_smoother_survives_a_clock_that_goes_backwards() -> None:
     # average would be (1000 + 2000 + 9999 + 3000) / 4 = 4000.25.
     assert smoother.value() == 2000
 
-
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [
@@ -364,7 +327,6 @@ def _main() -> int:
 
     print(f"\n{len(tests) - failures} passed, {failures} failed")
     return 1 if failures else 0
-
 
 if __name__ == "__main__":
     sys.exit(_main())

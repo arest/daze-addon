@@ -40,7 +40,6 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_DIR = ROOT / "custom_components" / "daze"
 
-
 def _load(name: str, filename: str) -> Any:
     """Load a single integration module without Home Assistant."""
     spec = importlib.util.spec_from_file_location(name, PACKAGE_DIR / filename)
@@ -50,9 +49,7 @@ def _load(name: str, filename: str) -> Any:
     spec.loader.exec_module(module)
     return module
 
-
 solar = _load("daze_solar_qa", "solar.py")
-
 
 def state(**overrides: Any) -> Any:
     """Build a healthy SolarState baseline; each test overrides what it
@@ -83,7 +80,6 @@ def state(**overrides: Any) -> Any:
     defaults.update(overrides)
     return solar.SolarState(**defaults)
 
-
 # ------------------------------------------------------------------
 # Sweep ranges, shared across the tests below.
 # ------------------------------------------------------------------
@@ -105,11 +101,9 @@ FLOOR_CEILING_PAIRS: tuple[tuple[int, int], ...] = tuple(
 SURPLUS_SWEEP: tuple[int, ...] = tuple(range(-2000, 24001, 2000))
 RESERVE_SWEEP: tuple[int, ...] = (0, 500, 1500, 3000)
 
-
 # ------------------------------------------------------------------
 # The target is always within bounds.
 # ------------------------------------------------------------------
-
 
 def test_target_within_bounds_whenever_a_command_is_issued() -> None:
     """A target below the floor or above the ceiling is a command the
@@ -180,11 +174,9 @@ def test_target_within_bounds_whenever_a_command_is_issued() -> None:
     assert checked_set > 0, "no SET/START was ever reached on the charging branch"
     assert checked_start > 0, "no SET/START was ever reached on the start branch"
 
-
 # ------------------------------------------------------------------
 # The reserve is always honoured; monotonicity in both directions.
 # ------------------------------------------------------------------
-
 
 def test_raising_the_reserve_never_raises_the_target() -> None:
     """The house's share can only ever grow the amount withheld from
@@ -215,7 +207,6 @@ def test_raising_the_reserve_never_raises_the_target() -> None:
 
     assert sequences_checked == len(FLOOR_CEILING_PAIRS) * len(SURPLUS_SWEEP)
 
-
 def test_more_surplus_never_lowers_the_target() -> None:
     """More available power for the car cannot produce a lower
     request. Sweeps floor/ceiling pairs and reserves, and for each one
@@ -245,7 +236,6 @@ def test_more_surplus_never_lowers_the_target() -> None:
 
     assert sequences_checked == len(FLOOR_CEILING_PAIRS) * len(RESERVE_SWEEP)
 
-
 # ------------------------------------------------------------------
 # No command without information: every guard, every combination.
 # ------------------------------------------------------------------
@@ -261,7 +251,6 @@ _GUARD_NAMES = (
     "commands_this_hour",
 )
 
-
 def _guarded_state(active_guards: frozenset[str], **base: Any) -> Any:
     """Build a state where exactly `active_guards` are tripped."""
     overrides = dict(base)
@@ -273,7 +262,6 @@ def _guarded_state(active_guards: frozenset[str], **base: Any) -> Any:
         solar.MAX_COMMANDS_PER_HOUR if "commands_this_hour" in active_guards else 0
     )
     return state(**overrides)
-
 
 def test_no_command_without_information_across_every_guard_combination() -> None:
     """decide() must return NOTHING whenever any one of these guards
@@ -315,7 +303,6 @@ def test_no_command_without_information_across_every_guard_combination() -> None
     expected_cases = 2 ** len(_GUARD_NAMES) * 2 * len(surpluses)
     assert cases == expected_cases
     assert guarded_cases == (2 ** len(_GUARD_NAMES) - 1) * 2 * len(surpluses)
-
 
 def test_backoff_blocks_a_restart_regardless_of_surplus() -> None:
     """The sixth guard, checked only while not charging: a car the
@@ -359,11 +346,9 @@ def test_backoff_blocks_a_restart_regardless_of_surplus() -> None:
     )
     assert charging_decision.action is solar.SolarAction.SET
 
-
 # ------------------------------------------------------------------
 # Rule ordering is stable.
 # ------------------------------------------------------------------
-
 
 def test_guard_priority_is_a_strict_total_order() -> None:
     """decide() lists its guards in a specific order - reachability,
@@ -419,11 +404,9 @@ def test_guard_priority_is_a_strict_total_order() -> None:
 
     assert checks == 2 * 2 * len(layers)
 
-
 # ------------------------------------------------------------------
 # The deadband is respected in both directions.
 # ------------------------------------------------------------------
-
 
 def test_deadband_blocks_small_changes_in_either_direction() -> None:
     """No SET for a change smaller than DEADBAND_W, whichever way the
@@ -480,11 +463,9 @@ def test_deadband_blocks_small_changes_in_either_direction() -> None:
     assert inside_band > 50
     assert at_or_past_boundary == 4
 
-
 # ------------------------------------------------------------------
 # The smoother.
 # ------------------------------------------------------------------
-
 
 def test_smoother_output_is_always_within_its_window_range() -> None:
     """A moving average can never report a value outside the range of
@@ -517,7 +498,6 @@ def test_smoother_output_is_always_within_its_window_range() -> None:
 
     assert checks == len(windows) * 200
 
-
 def test_smoother_evicts_exactly_at_the_window_boundary() -> None:
     """A sample exactly `window_seconds` old is still inside the
     window; one a moment older is not. The cutoff comparison has to be
@@ -536,11 +516,9 @@ def test_smoother_evicts_exactly_at_the_window_boundary() -> None:
     just_evicted.add(0.0, now=window + 0.001)
     assert just_evicted.value() == 0.0, "a sample older than the window survived"
 
-
 # ------------------------------------------------------------------
 # compute_surplus.
 # ------------------------------------------------------------------
-
 
 def test_compute_surplus_never_negative() -> None:
     """max(0, ...) must hold everywhere, including a heavy import with
@@ -553,10 +531,10 @@ def test_compute_surplus_never_negative() -> None:
         for export in exports:
             for imp in imports:
                 cases += 1
-                assert solar.compute_surplus(draw, export, imp) >= 0
+                grid = imp - export  # signed: import=positive, export=negative
+                assert solar.compute_surplus(draw, grid) >= 0
 
     assert cases > 1000
-
 
 def test_car_draw_makes_self_consumption_visible() -> None:
     """A charge entirely consumed by the house itself - the car
@@ -571,7 +549,7 @@ def test_car_draw_makes_self_consumption_visible() -> None:
         # Production exactly meets the load: nothing exported, nothing
         # imported. Perfect self-consumption, invisible to anything
         # that only looks at the grid meters.
-        visible = solar.compute_surplus(car_draw_w=draw, export_w=0, import_w=0)
+        visible = solar.compute_surplus(car_draw_w=draw, grid_power_w=0)
         naive = max(0.0, 0.0 - 0.0)  # the same formula with the draw term dropped
         cases += 1
         assert visible == draw, (draw, visible)
@@ -579,7 +557,6 @@ def test_car_draw_makes_self_consumption_visible() -> None:
         assert visible > naive
 
     assert cases == 50
-
 
 # ------------------------------------------------------------------
 # No command without information: the undeclared-supply guard.
@@ -590,7 +567,6 @@ def test_car_draw_makes_self_consumption_visible() -> None:
 # the Home Assistant imports required to import it cleanly. Everything
 # above this point never needed that.
 # ------------------------------------------------------------------
-
 
 def _install_ha_stubs() -> None:
     """Register just enough of Home Assistant for solar_controller.py
@@ -619,7 +595,6 @@ def _install_ha_stubs() -> None:
         async_track_state_change_event=_unused,
     )
     _module("homeassistant")
-
 
 def _load_controller_module() -> Any:
     """Load solar_controller.py as part of the daze package, the same
@@ -651,9 +626,7 @@ def _load_controller_module() -> Any:
     spec.loader.exec_module(module)
     return module
 
-
 controller_module = _load_controller_module()
-
 
 class _FakeCoordinator:
     """Just the `.data` attribute unsupported_reason reads.
@@ -665,7 +638,6 @@ class _FakeCoordinator:
 
     def __init__(self, data: dict[str, Any]) -> None:
         self.data = data
-
 
 def test_unsupported_reason_fires_whenever_the_supply_is_undeclared() -> None:
     """A missing declaration of how many phases feed the house is not
@@ -683,8 +655,7 @@ def test_unsupported_reason_fires_whenever_the_supply_is_undeclared() -> None:
             controller = controller_module.SolarController(
                 hass=object(),
                 coordinator=_FakeCoordinator({"evseIsThreePhase": three_phase_charger}),
-                import_entity="sensor.grid_import",
-                export_entity="sensor.grid_export",
+                grid_power_entity="sensor.grid_power",
                 supply_phases=supply_phases,
             )
             reason = controller.unsupported_reason
@@ -703,7 +674,6 @@ def test_unsupported_reason_fires_whenever_the_supply_is_undeclared() -> None:
     assert declared_undeclared > 0
     assert declared_known > 0
 
-
 def test_undeclared_supply_blocks_every_tick_from_issuing_a_command() -> None:
     """The guard is not just a message a UI could ignore: an active
     controller with an undeclared supply must send nothing on any
@@ -716,15 +686,13 @@ def test_undeclared_supply_blocks_every_tick_from_issuing_a_command() -> None:
         controller = controller_module.SolarController(
             hass=object(),
             coordinator=coordinator,
-            import_entity="sensor.grid_import",
-            export_entity="sensor.grid_export",
+            grid_power_entity="sensor.grid_power",
             supply_phases=supply_phases,
         )
         controller.mode = controller_module.SolarMode.ACTIVE
 
         assert controller.unsupported_reason is not None
         asyncio.run(controller.async_tick())
-
 
 def _main() -> int:
     """Run every test in this module and report results."""
@@ -746,7 +714,6 @@ def _main() -> int:
 
     print(f"\n{len(tests) - failures} passed, {failures} failed")
     return 1 if failures else 0
-
 
 if __name__ == "__main__":
     sys.exit(_main())

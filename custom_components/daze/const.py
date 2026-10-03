@@ -45,11 +45,11 @@ DEFAULT_POLL_INTERVAL = 30  # seconds
 MIN_POLL_INTERVAL = 10  # seconds
 MAX_POLL_INTERVAL = 600  # seconds
 
-# Solar surplus control. The two grid sensors are chosen by the user in
-# the options flow; both are required before solar control can leave
-# "off".
-CONF_GRID_IMPORT_SENSOR = "grid_import_sensor"
-CONF_GRID_EXPORT_SENSOR = "grid_export_sensor"
+# Solar surplus control. A single signed grid power sensor is chosen
+# by the user in the options flow; it must be present before solar
+# control can leave "off".
+# Signed convention: positive = import from grid, negative = export.
+CONF_GRID_POWER_SENSOR = "grid_power_sensor"
 
 # How many phases feed the house. Declared by the user, because the
 # Daze payload does not say: its only phase field, evseIsThreePhase,

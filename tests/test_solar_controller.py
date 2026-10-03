@@ -240,18 +240,19 @@ def build(
     """
     hass = StubHass()
     hass.states.set(
-        "sensor.grid_import", "0", {"unit_of_measurement": "W"}
+        "sensor.grid_power", "-5000", {"unit_of_measurement": "W"}
     )
-    hass.states.set(
-        "sensor.grid_export", "5000", {"unit_of_measurement": "W"}
-    )
+
+
+
+
+
 
     coordinator = FakeCoordinator(dict(data or CHARGING_DATA))
     controller = controller_module.SolarController(
         hass=hass,
         coordinator=coordinator,
-        import_entity="sensor.grid_import",
-        export_entity="sensor.grid_export",
+        grid_power_entity="sensor.grid_power",
         supply_phases=supply_phases,
     )
     return controller, coordinator, hass
@@ -326,9 +327,9 @@ def test_a_missing_sensor_stops_nothing() -> None:
     """
     controller, coordinator, hass = build()
     controller.mode = controller_module.SolarMode.ACTIVE
-    hass.states.set(
-        "sensor.grid_export", "unavailable", {"unit_of_measurement": "W"}
-    )
+    hass.states.set("sensor.grid_power", "unavailable", {"unit_of_measurement": "W"})
+
+
 
     asyncio.run(controller.async_tick())
 
@@ -360,12 +361,12 @@ def test_missing_car_draw_while_charging_skips_the_cycle() -> None:
     del data["instantPowerAsWatt"]
     controller, coordinator, hass = build(data)
     controller.mode = controller_module.SolarMode.ACTIVE
-    hass.states.set(
-        "sensor.grid_import", "0", {"unit_of_measurement": "W"}
-    )
-    hass.states.set(
-        "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-    )
+    hass.states.set("sensor.grid_power", "0", {"unit_of_measurement": "W"})
+
+
+
+
+
 
     asyncio.run(controller.async_tick())
 
@@ -380,12 +381,12 @@ def test_car_draw_accepts_a_numeric_string() -> None:
     data["instantPowerAsWatt"] = "3000"
     controller, _, hass = build(data)
     controller.mode = controller_module.SolarMode.SIMULATE
-    hass.states.set(
-        "sensor.grid_import", "0", {"unit_of_measurement": "W"}
-    )
-    hass.states.set(
-        "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-    )
+    hass.states.set("sensor.grid_power", "0", {"unit_of_measurement": "W"})
+
+
+
+
+
 
     asyncio.run(controller.async_tick())
 
@@ -440,12 +441,12 @@ def test_a_kilowatt_sensor_is_converted_to_watts() -> None:
     """4.0 kW exported is 4000 W, the same signal a W sensor would give."""
     controller, _, hass = build()
     controller.mode = controller_module.SolarMode.SIMULATE
-    hass.states.set(
-        "sensor.grid_export", "4.0", {"unit_of_measurement": "kW"}
-    )
-    hass.states.set(
-        "sensor.grid_import", "0", {"unit_of_measurement": "W"}
-    )
+    hass.states.set("sensor.grid_power", "-4000", {"unit_of_measurement": "W"})
+
+
+
+
+
 
     asyncio.run(controller.async_tick())
 
@@ -462,9 +463,9 @@ def test_an_unrecognised_unit_stops_nothing() -> None:
     """
     controller, coordinator, hass = build()
     controller.mode = controller_module.SolarMode.ACTIVE
-    hass.states.set(
-        "sensor.grid_export", "5000", {"unit_of_measurement": "lux"}
-    )
+    hass.states.set("sensor.grid_power", "0", {"unit_of_measurement": "lux"})
+
+
 
     asyncio.run(controller.async_tick())
 
@@ -494,22 +495,19 @@ def test_a_blind_period_does_not_accrue_toward_stopping() -> None:
 
         # Below the floor: the car draws exactly what is imported.
         hass.states.set(
-            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+            "sensor.grid_power", "3000", {"unit_of_measurement": "W"}
         )
         asyncio.run(controller.async_tick())
 
-        # Ten minutes pass with the export sensor unreadable.
+        # Ten minutes pass with the sensor unreadable.
         clock[0] += 600
-        hass.states.set("sensor.grid_export", "unavailable")
+        hass.states.set("sensor.grid_power", "unavailable")
         asyncio.run(controller.async_tick())
 
         # It returns, still below the floor, an instant later.
         clock[0] += 1
         hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+            "sensor.grid_power", "0", {"unit_of_measurement": "W"}
         )
         asyncio.run(controller.async_tick())
     finally:
@@ -696,12 +694,12 @@ def test_solar_charge_retries_share_the_manual_switch_key() -> None:
     controller_module.time.monotonic = lambda: clock[0]
     try:
         controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
-        hass.states.set(
-            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-        )
+        hass.states.set("sensor.grid_power", "3000", {"unit_of_measurement": "W"})
+
+
+
+
+
         asyncio.run(controller.async_tick())  # starts the below-floor timer
 
         clock[0] += solar.STOP_DELAY_SECONDS + 1
@@ -1085,12 +1083,12 @@ def test_stopping_clears_the_draw_grace_mark() -> None:
     controller_module.time.monotonic = lambda: clock[0]
     try:
         controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
-        hass.states.set(
-            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-        )
+        hass.states.set("sensor.grid_power", "3000", {"unit_of_measurement": "W"})
+
+
+
+
+
         asyncio.run(controller.async_tick())  # starts the below-floor timer
 
         clock[0] += solar.STOP_DELAY_SECONDS + 1
@@ -1224,12 +1222,12 @@ def test_a_successful_stop_cancels_its_background_retry() -> None:
     controller_module.time.monotonic = lambda: clock[0]
     try:
         controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
-        hass.states.set(
-            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-        )
+        hass.states.set("sensor.grid_power", "3000", {"unit_of_measurement": "W"})
+
+
+
+
+
         asyncio.run(controller.async_tick())  # starts the below-floor timer
 
         clock[0] += solar.STOP_DELAY_SECONDS + 1
@@ -1382,12 +1380,12 @@ def test_a_collapse_starts_the_stop_clock_when_it_happens() -> None:
         # deferred to the next ordinary tick.
         clock[0] += 10
         collapse_at = clock[0]
-        hass.states.set(
-            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-        )
+        hass.states.set("sensor.grid_power", "4000", {"unit_of_measurement": "W"})
+
+
+
+
+
         asyncio.run(controller.async_sensor_changed())
 
         # The ordinary tick that actually evaluates the collapse,
@@ -1430,12 +1428,12 @@ def test_a_collapse_is_evaluated_once_not_on_every_sensor_update() -> None:
         asyncio.run(controller.async_tick())
 
         clock[0] += solar.TICK_SECONDS + 1
-        hass.states.set(
-            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-        )
+        hass.states.set("sensor.grid_power", "0", {"unit_of_measurement": "W"})
+
+
+
+
+
         asyncio.run(controller.async_sensor_changed())
 
         after_first = len(coordinator.api_client.calls)
@@ -1475,10 +1473,7 @@ def test_a_recovery_re_arms_the_fast_path() -> None:
 
         clock[0] += solar.TICK_SECONDS + 1
         hass.states.set(
-            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+            "sensor.grid_power", "4000", {"unit_of_measurement": "W"}
         )
         asyncio.run(controller.async_sensor_changed())
         assert controller._below_since is not None
@@ -1486,10 +1481,7 @@ def test_a_recovery_re_arms_the_fast_path() -> None:
         # The kettle switches off.
         clock[0] += 30
         hass.states.set(
-            "sensor.grid_import", "0", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "5000", {"unit_of_measurement": "W"}
+            "sensor.grid_power", "-5000", {"unit_of_measurement": "W"}
         )
         asyncio.run(controller.async_sensor_changed())
         assert controller._collapsed_since is None
@@ -1513,7 +1505,7 @@ def test_a_rise_does_not_trigger_an_immediate_evaluation() -> None:
         asyncio.run(controller.async_tick())
 
     before = len(coordinator.api_client.calls)
-    hass.states.set("sensor.grid_export", "9000")
+    hass.states.set("sensor.grid_power", "0", {"unit_of_measurement": "W"})
 
     asyncio.run(controller.async_sensor_changed())
 
@@ -1542,12 +1534,12 @@ def test_a_sensor_event_during_a_tick_does_not_start_a_second_one() -> None:
         serial: str, current_ma: int, attempts: int = 8
     ) -> dict:
         coordinator.api_client.calls.append(("current", current_ma))
-        hass.states.set(
-            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-        )
+        hass.states.set("sensor.grid_power", "0", {"unit_of_measurement": "W"})
+
+
+
+
+
         clock[0] += solar.TICK_SECONDS + 1
         await controller.async_sensor_changed()
         reentered.append(1)
@@ -1632,12 +1624,12 @@ def test_a_sensor_event_after_stop_does_not_evaluate() -> None:
         assert controller._stopped is True
 
         clock[0] += solar.TICK_SECONDS + 1
-        hass.states.set(
-            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-        )
+        hass.states.set("sensor.grid_power", "0", {"unit_of_measurement": "W"})
+
+
+
+
+
         asyncio.run(controller.async_sensor_changed())
     finally:
         controller_module.time.monotonic = original_monotonic
@@ -1680,10 +1672,7 @@ def test_a_fresh_collapse_within_one_tick_still_waits_for_the_spacing_guard() ->
 
         clock[0] += solar.TICK_SECONDS + 1
         hass.states.set(
-            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+            "sensor.grid_power", "4000", {"unit_of_measurement": "W"}
         )
         asyncio.run(controller.async_sensor_changed())  # evaluates now
 
@@ -1693,20 +1682,14 @@ def test_a_fresh_collapse_within_one_tick_still_waits_for_the_spacing_guard() ->
         # both well inside the one tick the spacing guard enforces.
         clock[0] += 5
         hass.states.set(
-            "sensor.grid_import", "0", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "5000", {"unit_of_measurement": "W"}
+            "sensor.grid_power", "-5000", {"unit_of_measurement": "W"}
         )
         asyncio.run(controller.async_sensor_changed())
         assert controller._collapsed_since is None, "did not re-arm"
 
         clock[0] += 5
         hass.states.set(
-            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+            "sensor.grid_power", "4000", {"unit_of_measurement": "W"}
         )
         asyncio.run(controller.async_sensor_changed())
     finally:
@@ -1740,19 +1723,13 @@ def test_a_tick_only_recovery_clears_the_collapse_anchor() -> None:
     controller_module.time.monotonic = lambda: clock[0]
     try:
         hass.states.set(
-            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+            "sensor.grid_power", "4000", {"unit_of_measurement": "W"}
         )
         asyncio.run(controller.async_tick())  # collapses, through a tick
         assert controller._collapsed_since is not None
 
         hass.states.set(
-            "sensor.grid_import", "0", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "5000", {"unit_of_measurement": "W"}
+            "sensor.grid_power", "-5000", {"unit_of_measurement": "W"}
         )
         clock[0] += solar.TICK_SECONDS
         asyncio.run(controller.async_tick())  # recovers, through a tick
@@ -1788,16 +1765,13 @@ def test_a_blind_tick_does_not_reset_the_fast_paths_spacing_clock() -> None:
         # strength of the blind tick that follows.
         clock[0] += solar.TICK_SECONDS + 1
         blind_at = clock[0]
-        hass.states.set("sensor.grid_export", "unavailable")
+        hass.states.set("sensor.grid_power", "unavailable")
         asyncio.run(controller.async_tick())  # observes nothing
 
         clock[0] += 1
         collapse_at = clock[0]
         hass.states.set(
-            "sensor.grid_import", "4000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+            "sensor.grid_power", "4000", {"unit_of_measurement": "W"}
         )
         asyncio.run(controller.async_sensor_changed())
 
@@ -1996,12 +1970,12 @@ def test_a_stop_that_could_not_be_sent_is_not_re_issued_every_tick() -> None:
     controller_module.time.monotonic = lambda: clock[0]
     try:
         controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
-        hass.states.set(
-            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-        )
+        hass.states.set("sensor.grid_power", "3000", {"unit_of_measurement": "W"})
+
+
+
+
+
         asyncio.run(controller.async_tick())  # starts the below-floor timer
 
         clock[0] += solar.STOP_DELAY_SECONDS + 1
@@ -2065,12 +2039,12 @@ def test_simulate_previews_a_stop_on_an_already_running_charge() -> None:
     original_monotonic = controller_module.time.monotonic
     controller_module.time.monotonic = lambda: clock[0]
     try:
-        hass.states.set(
-            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-        )
+        hass.states.set("sensor.grid_power", "3000", {"unit_of_measurement": "W"})
+
+
+
+
+
         asyncio.run(controller.async_tick())  # seeds, starts the timer
 
         clock[0] += solar.STOP_DELAY_SECONDS + 1
@@ -2115,10 +2089,7 @@ def test_the_seeded_flag_resets_so_a_later_charge_is_reseeded() -> None:
 
         # Collapse surplus and let the stop actually land.
         hass.states.set(
-            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
+            "sensor.grid_power", "3000", {"unit_of_measurement": "W"}
         )
         asyncio.run(controller.async_tick())  # starts the below-floor timer
         clock[0] += solar.STOP_DELAY_SECONDS + 1
@@ -2134,10 +2105,7 @@ def test_the_seeded_flag_resets_so_a_later_charge_is_reseeded() -> None:
         # episode does not immediately stop the second one and mask
         # what this test is actually checking.
         hass.states.set(
-            "sensor.grid_import", "0", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "5000", {"unit_of_measurement": "W"}
+            "sensor.grid_power", "-5000", {"unit_of_measurement": "W"}
         )
 
         # One tick observes the charger now idle.
@@ -2266,12 +2234,12 @@ def test_c1_a_stop_whose_retry_chain_exhausts_reseeds_the_min_run_clock() -> (
     controller_module.time.monotonic = lambda: clock[0]
     try:
         controller._started_at = clock[0] - solar.MIN_RUN_SECONDS - 1
-        hass.states.set(
-            "sensor.grid_import", "3000", {"unit_of_measurement": "W"}
-        )
-        hass.states.set(
-            "sensor.grid_export", "0", {"unit_of_measurement": "W"}
-        )
+        hass.states.set("sensor.grid_power", "3000", {"unit_of_measurement": "W"})
+
+
+
+
+
         asyncio.run(controller.async_tick())  # starts the below-floor timer
 
         clock[0] += solar.STOP_DELAY_SECONDS + 1
@@ -2393,12 +2361,12 @@ def test_i1_an_intermittent_raw_dip_does_not_veto_the_smoothed_start_clock() -> 
         # never drops below the floor (2350 W, 2733 W, 1967 W over the
         # four ticks below), only the raw reading does.
         for export in (3500, 1200, 3500, 1200):
-            hass.states.set(
-                "sensor.grid_import", "0", {"unit_of_measurement": "W"}
-            )
-            hass.states.set(
-                "sensor.grid_export", str(export), {"unit_of_measurement": "W"}
-            )
+            hass.states.set("sensor.grid_power", str(-export), {"unit_of_measurement": "W"})
+
+
+
+
+
             asyncio.run(controller.async_tick())
             clock[0] += solar.TICK_SECONDS
     finally:

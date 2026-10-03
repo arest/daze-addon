@@ -23,11 +23,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_DIR = ROOT / "custom_components" / "daze"
 PKG_NAME = "daze_config_flow_under_test"
 
-
 # ------------------------------------------------------------------
 # Home Assistant / voluptuous stubs
 # ------------------------------------------------------------------
-
 
 def _module(name: str, **attributes: Any) -> types.ModuleType:
     """Build a stub module with the given attributes."""
@@ -36,7 +34,6 @@ def _module(name: str, **attributes: Any) -> types.ModuleType:
         setattr(module, key, value)
     sys.modules[name] = module
     return module
-
 
 class _StubConfigFlow:
     """Stand-in for homeassistant.config_entries.ConfigFlow.
@@ -51,7 +48,6 @@ class _StubConfigFlow:
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__()
-
 
 class _StubOptionsFlow:
     """Stand-in for homeassistant.config_entries.OptionsFlow.
@@ -72,13 +68,11 @@ class _StubOptionsFlow:
     ) -> dict[str, Any]:
         return {"type": "form", "step_id": step_id, "data_schema": data_schema}
 
-
 class _SelectorConfig:
     """Stand-in for EntitySelectorConfig / SelectSelectorConfig."""
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
-
 
 class _Selector:
     """Stand-in for EntitySelector / SelectSelector."""
@@ -86,10 +80,8 @@ class _Selector:
     def __init__(self, config: Any) -> None:
         self.config = config
 
-
 class _SelectSelectorMode:
     DROPDOWN = "dropdown"
-
 
 def _install_stubs() -> None:
     """Register just enough of Home Assistant and voluptuous to import
@@ -135,9 +127,7 @@ def _install_stubs() -> None:
         Invalid=type("Invalid", (Exception,), {}),
     )
 
-
 _install_stubs()
-
 
 def _load_package() -> types.ModuleType:
     """Load the real package, including config_flow.py, without going
@@ -187,15 +177,12 @@ def _load_package() -> types.ModuleType:
 
     return config_flow_module
 
-
 config_flow = _load_package()
 const = sys.modules[f"{PKG_NAME}.const"]
-
 
 # ------------------------------------------------------------------
 # Fakes
 # ------------------------------------------------------------------
-
 
 class FakeConfigEntry:
     """Stand-in for a ConfigEntry, holding only what the handler reads."""
@@ -204,16 +191,13 @@ class FakeConfigEntry:
         self.data: dict[str, Any] = {}
         self.options = dict(options or {})
 
-
 def _handler(options: dict[str, Any] | None = None) -> Any:
     entry = FakeConfigEntry(options)
     return config_flow.DazeOptionsFlowHandler(entry)
 
-
 # ------------------------------------------------------------------
 # Saving the form merges rather than replaces
 # ------------------------------------------------------------------
-
 
 def test_saving_the_form_preserves_the_solar_reserve() -> None:
     """The form has no field for the solar reserve — Task 7's reserve
@@ -237,7 +221,6 @@ def test_saving_the_form_preserves_the_solar_reserve() -> None:
         "the field the form actually submitted was not applied"
     )
 
-
 def test_saving_the_form_applies_a_submitted_field_over_the_old_value() -> (
     None
 ):
@@ -251,9 +234,8 @@ def test_saving_the_form_applies_a_submitted_field_over_the_old_value() -> (
 
     assert result["data"]["poll_interval"] == 60
 
-
 def test_clearing_a_sensor_actually_clears_it() -> None:
-    """Every field this form owns — the two grid sensors and the
+    """Every field this form owns — the grid power sensor and the
     supply-phases question — is vol.Optional with no default, so a
     user clearing one in the frontend omits it from user_input rather
     than submitting an empty value. A blanket merge of the old options
@@ -265,31 +247,25 @@ def test_clearing_a_sensor_actually_clears_it() -> None:
     """
     handler = _handler(
         {
-            const.CONF_GRID_IMPORT_SENSOR: "sensor.grid_import",
-            const.CONF_GRID_EXPORT_SENSOR: "sensor.grid_export",
+            const.CONF_GRID_POWER_SENSOR: "sensor.grid_power",
             "poll_interval": 30,
         }
     )
 
-    # The user cleared the import sensor picker and saved: the frontend
-    # omits a cleared vol.Optional field entirely rather than
+    # The user cleared the grid power sensor picker and saved: the
+    # frontend omits a cleared vol.Optional field entirely rather than
     # submitting it as empty.
     result = asyncio.run(
         handler.async_step_init(
             {
-                const.CONF_GRID_EXPORT_SENSOR: "sensor.grid_export",
                 "poll_interval": 30,
             }
         )
     )
 
-    assert const.CONF_GRID_IMPORT_SENSOR not in result["data"], (
+    assert const.CONF_GRID_POWER_SENSOR not in result["data"], (
         "a cleared sensor was silently restored from the stale options"
     )
-    assert result["data"][const.CONF_GRID_EXPORT_SENSOR] == (
-        "sensor.grid_export"
-    )
-
 
 def _main() -> int:
     """Run every test in this module and report results."""
@@ -311,7 +287,6 @@ def _main() -> int:
 
     print(f"\n{len(tests) - failures} passed, {failures} failed")
     return 1 if failures else 0
-
 
 if __name__ == "__main__":
     sys.exit(_main())

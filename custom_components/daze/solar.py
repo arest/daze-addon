@@ -228,7 +228,7 @@ def decide(state: SolarState) -> SolarDecision:
 
 
 def compute_surplus(
-    car_draw_w: float, export_w: float, import_w: float
+    car_draw_w: float, grid_power_w: float
 ) -> float:
     """Return the power available to the car, in watts.
 
@@ -237,16 +237,20 @@ def compute_surplus(
     makes the controller read its own consumption as a deficit and wind
     itself down to zero.
 
+    Uses a single signed grid power reading: positive = import,
+    negative = export. The minus sign inverts export to a positive
+    add-back and import to a subtraction automatically.
+
     Args:
         car_draw_w: What the charger is currently delivering.
-        export_w: Grid export, positive.
-        import_w: Grid import, positive.
+        grid_power_w: Signed net grid power (positive = import,
+            negative = export).
 
     Returns:
         Available watts, never negative.
 
     """
-    return max(0.0, car_draw_w + export_w - import_w)
+    return max(0.0, car_draw_w - grid_power_w)
 
 
 class SurplusSmoother:

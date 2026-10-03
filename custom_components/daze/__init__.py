@@ -15,8 +15,7 @@ from .const import (
     CONF_DEVICE_PROFILE,
     CONF_EVSE_NAME,
     CONF_FIRMWARE_VERSION,
-    CONF_GRID_EXPORT_SENSOR,
-    CONF_GRID_IMPORT_SENSOR,
+    CONF_GRID_POWER_SENSOR,
     CONF_NETWORK_UID,
     CONF_SERIAL_NUMBER,
     CONF_SOFTWARE_VERSION,
@@ -77,8 +76,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     solar_controller = SolarController(
         hass=hass,
         coordinator=coordinator,
-        import_entity=entry.options.get(CONF_GRID_IMPORT_SENSOR),
-        export_entity=entry.options.get(CONF_GRID_EXPORT_SENSOR),
+        grid_power_entity=entry.options.get(CONF_GRID_POWER_SENSOR),
         reserve_w=entry.options.get(
             CONF_SOLAR_RESERVE, DEFAULT_SOLAR_RESERVE
         ),
