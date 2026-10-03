@@ -77,7 +77,50 @@ async def async_fetch_user(
             if not isinstance(body, dict):
                 body = {}
 
-            return response.status, body
+            if response.status == 200:
+                return response.status, body
+
+            # Some Daze portal accounts receive access tokens scoped
+            # "openid profile email daze.api/daze.api" without
+            # "aws.cognito.signin.user.admin". GetUser rejects those
+            # ("Access Token does not have required scopes") while the
+            # hosted-UI userInfo endpoint accepts them, so fall back
+            # to userInfo and reshape its reply like GetUser's so
+            # callers do not need to change.
+            _LOGGER.debug(
+                "GetUser rejected the token (%s), trying userInfo",
+                describe_get_user_error(response.status, body),
+            )
+            try:
+                async with session.get(
+                    f"{COGNITO_BASE_URL}/oauth2/userInfo",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                ) as info_response:
+                    try:
+                        info = await info_response.json(content_type=None)
+                    except (ValueError, TypeError):
+                        info = {}
+                    if info_response.status == 200 and isinstance(info, dict):
+                        return 200, {
+                            "Username": info.get("username", info.get("sub", "")),
+                            "UserAttributes": [
+                                {"Name": key, "Value": value}
+                                for key, value in info.items()
+                                if isinstance(value, str)
+                            ],
+                        }
+            except ClientError as err:
+                _LOGGER.warning("Network error during userInfo: %s", err)
+                raise AuthError(f"Network error during userInfo: {err}") from err
+
+            # userInfo returned non-200 — fall through to return the
+            # original GetUser failure.
+
+        # Either userInfo returned non-200 or its inner async with
+        # completed without raising.  In both cases return the
+        # original GetUser status/body so callers get the failure.
+
+        return response.status, body
 
     except ClientError as err:
         _LOGGER.warning("Network error during GetUser: %s", err)
