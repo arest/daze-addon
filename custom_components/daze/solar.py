@@ -61,7 +61,7 @@ class SolarAction(Enum):
 class SolarState:
     """Everything the decision depends on.
 
-    Assembled by the controller from the grid sensors, the coordinator
+    Assembled by the controller from signed grid power, the coordinator
     and its own timers.
     """
 
@@ -96,6 +96,49 @@ class SolarDecision:
     action: SolarAction
     target_watts: int | None
     reason: str
+
+
+def solar_attributes(
+    mode: Any,
+    decision: SolarDecision | None,
+    surplus_w: float | None,
+) -> dict[str, Any]:
+    """Build the attributes dict for the solar surplus sensor.
+
+    Pure function so the formatting can be tested independently of
+    Home Assistant, the coordinator, and the event loop.
+
+    Args:
+        mode: A SolarMode enum value.
+        decision: The last SolarDecision, or None.
+        surplus_w: The smoothed surplus, or None.
+
+    Returns:
+        A dict suitable for SensorEntity.extra_state_attributes.
+    """
+    mode_name = mode.value if isinstance(mode, Enum) else str(mode)
+
+    if decision is None:
+        return {
+            "mode": mode_name,
+            "last_decision": "none",
+            "reason": "",
+            "surplus_w": surplus_w,
+            "target_watts": None,
+        }
+
+    decision_name = (
+        decision.action.value
+        if isinstance(decision.action, Enum)
+        else str(decision.action)
+    )
+    return {
+        "mode": mode_name,
+        "last_decision": decision_name,
+        "reason": decision.reason if hasattr(decision, "reason") else "",
+        "surplus_w": surplus_w,
+        "target_watts": getattr(decision, "target_watts", None),
+    }
 
 
 def _nothing(reason: str) -> SolarDecision:

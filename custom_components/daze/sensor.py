@@ -32,6 +32,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 from .coordinator import DazeCoordinatorData, DazeDataUpdateCoordinator
 from .sensor_catalog import EVSE_SENSOR_CATALOG, RESTORE_STATE_KEYS, EVSESensorSpec
+from .solar import solar_attributes
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -174,7 +175,21 @@ class DazeWallboxSensorEntity(
         """Return current coordinator value or restored fallback."""
         data: DazeCoordinatorData | None = self.coordinator.data
         if data is not None:
-            return self.entity_description.value_fn(data)
+            value = self.entity_description.value_fn(data)
+            # Return None so HA shows "unavailable" rather than
+            # displaying the raw null / zero / junk that the API
+            # returns for sensors the charger does not support.
+            if value is None:
+                return None
+
+            # Single-phase chargers return junk in L2/L3 fields
+            # (e.g. 1 V, 7 V). Hide them unless the charger is
+            # declared three-phase.
+            if self.entity_description.key in ("charging_current_l2", "charging_current_l3", "ac_voltage_l2", "ac_voltage_l3"):
+                if not data.get("evseIsThreePhase"):
+                    return None
+
+            return value
 
         if self._restored_value is not None:
             return self._restored_value
@@ -221,6 +236,15 @@ class DazeSolarSurplusSensor(
     def native_value(self) -> float | None:
         """Return the smoothed surplus."""
         return self._controller.surplus_w
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return solar control simulation state."""
+        return solar_attributes(
+            mode=self._controller.mode,
+            decision=self._controller.last_decision,
+            surplus_w=self._controller.surplus_w,
+        )
 
 
 async def async_setup_entry(
