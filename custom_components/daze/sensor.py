@@ -214,9 +214,13 @@ class DazeWallboxSensorEntity(
         if self.entity_description.key not in RESTORE_STATE_KEYS:
             return
 
-        if self.coordinator.data is not None:
-            return
-
+        # Deliberately not gated on "the coordinator has no data yet".
+        # It never does not: async_setup_entry performs the first
+        # refresh before it forwards the platforms, so by the time any
+        # entity is added the data is already there, and that guard
+        # skipped the restore on every restart that actually happens.
+        # Reading the stored state costs one lookup and is only
+        # consulted when the live reading is absent.
         last_state = await self.async_get_last_state()
         if last_state is None or last_state.state in (None, "unknown", "unavailable"):
             return
@@ -235,7 +239,18 @@ class DazeWallboxSensorEntity(
             # Return None so HA shows "unavailable" rather than
             # displaying the raw null / zero / junk that the API
             # returns for sensors the charger does not support.
+            #
+            # The cumulative counters are the exception. They are
+            # declared total_increasing, so a gap followed by a figure
+            # lower than the last one is read as a meter reset and
+            # double counted. Holding the last known value keeps the
+            # series monotonic across a history the API has stopped
+            # serving. A measurement gets no such fallback: a held
+            # instant power would show a car still drawing after the
+            # charger went quiet.
             if value is None:
+                if self.entity_description.key in RESTORE_STATE_KEYS:
+                    return self._restored_value
                 return None
 
             if is_unreportable_phase_sensor(

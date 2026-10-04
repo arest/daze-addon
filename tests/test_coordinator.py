@@ -569,6 +569,84 @@ def test_shutdown_stands_every_chain_down() -> None:
     assert coordinator._pending_retries == {}
 
 
+# ------------------------------------------------------------------
+# A history that was never readable is not a history of zero
+#
+# The 404 tests above cover the case where a good history is already
+# cached. They do not cover the one this charger is actually in: the
+# endpoint has 404'd from the first poll, so the cache has never held
+# anything. The coordinator's own log line promises the session and
+# lifetime sensors "will stay empty" in that situation, and before
+# these tests it published a hard zero instead -- on sensors declared
+# total_increasing, which is the meter-reset reading the 404 fix
+# exists to prevent.
+# ------------------------------------------------------------------
+
+
+def test_a_history_never_successfully_read_reports_no_lifetime() -> None:
+    """Never read is unknown, and unknown is not zero.
+
+    A fabricated 0.0 on a total_increasing sensor is not a harmless
+    placeholder: Home Assistant's statistics engine reads the step
+    down to zero as a meter reset, so the whole lifetime figure is
+    counted a second time if the endpoint ever starts answering.
+    """
+    coordinator = build(ApiNotFoundError("404"))
+
+    run(coordinator._async_fetch_sessions())
+    fields = coordinator.session_fields()
+
+    assert fields["lifetime_energy"] is None, (
+        "an unreadable history published a lifetime of zero"
+    )
+    assert fields["total_sessions"] is None, (
+        "an unreadable history published a session count of zero"
+    )
+
+
+def test_a_successful_empty_history_still_reports_zero() -> None:
+    """A fresh charger genuinely has zero sessions, and says so.
+
+    The guard above must key on whether the history was ever read,
+    not on whether it is empty, or a brand-new install never reports
+    the zero that is its honest answer.
+    """
+    coordinator = build([])
+
+    run(coordinator._async_fetch_sessions())
+    fields = coordinator.session_fields()
+
+    assert fields["lifetime_energy"] == 0.0, (
+        "a charger with a readable but empty history reported unknown"
+    )
+    assert fields["total_sessions"] == 0
+
+
+def test_a_404_after_a_good_read_keeps_reporting_the_good_figures() -> None:
+    """Once read, the history stays reported through later 404s.
+
+    Guards the seam between the two rules above: the "never read"
+    flag must latch on the first success and stay latched, or a
+    later 404 would blank a lifetime figure that is still known.
+    """
+    coordinator = build([{"sessionUid": "s1", "energyInWh": 5000.0}])
+    first = run(coordinator._async_fetch_sessions())
+    assert first is not None
+    coordinator._cached_sessions = first
+
+    coordinator._api_client.sessions_result = ApiNotFoundError("404")
+    coordinator._next_session_fetch = 0.0
+    result = run(coordinator._async_fetch_sessions())
+    if result is not None:
+        coordinator._cached_sessions = result
+
+    fields = coordinator.session_fields()
+    assert fields["lifetime_energy"] == 5000.0, (
+        "a 404 blanked a lifetime figure that had already been read"
+    )
+    assert fields["total_sessions"] == 1
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

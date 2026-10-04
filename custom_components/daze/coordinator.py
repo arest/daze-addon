@@ -110,6 +110,13 @@ class DazeDataUpdateCoordinator(
         self._next_evse_fetch: float = 0.0
         self._next_session_fetch: float = 0.0
         self._sessions_missing_logged: bool = False
+        # Whether the session history has ever been read successfully.
+        # Distinguishes "this charger has no sessions", which is a
+        # real answer of zero, from "the history has never been
+        # readable", which is not an answer at all. The cache is an
+        # empty list in both cases, so nothing else here can tell
+        # them apart. See session_fields().
+        self._sessions_ever_read: bool = False
         self._pending_retries: dict[str, Callable[[], None]] = {}
         self._pending_timers: set[Callable[[], None]] = set()
         # The charging limit is one setting with two views, in amps
@@ -493,7 +500,7 @@ class DazeDataUpdateCoordinator(
 
         sessions = self._cached_sessions
         data["sessions"] = sessions
-        data.update(self._compute_session_fields(sessions))
+        data.update(self.session_fields())
 
         _LOGGER.debug(
             "Coordinator data for %s: %d sessions loaded",
@@ -502,6 +509,38 @@ class DazeDataUpdateCoordinator(
         )
 
         return data
+
+    def session_fields(self) -> dict[str, Any]:
+        """Return the session sensor values for the cached history.
+
+        Wraps _compute_session_fields with the one fact that function
+        cannot see: whether the history was ever readable at all.
+
+        _compute_session_fields answers for the list it is given, and
+        an empty list means zero sessions and zero lifetime energy.
+        That is the right answer for a charger that genuinely has no
+        history. It is the wrong answer for a charger whose history
+        endpoint has 404'd since the first poll, where the cache is
+        empty for want of a reading rather than for want of sessions —
+        and the two are indistinguishable from the list alone.
+
+        The difference matters because lifetime_energy and
+        total_sessions are declared total_increasing. Home Assistant
+        reads a step down to zero on such a sensor as a meter reset
+        and adds the previous total into its running sum, so a
+        fabricated zero does not merely display wrongly, it corrupts
+        the long-term statistics and double counts the whole lifetime
+        if the endpoint later recovers. None displays as unavailable
+        and is recorded as nothing, which is what the 404 log line
+        already promises the user will happen.
+        """
+        fields = self._compute_session_fields(self._cached_sessions)
+
+        if not self._sessions_ever_read:
+            fields["lifetime_energy"] = None
+            fields["total_sessions"] = None
+
+        return fields
 
     @staticmethod
     def _compute_session_fields(
@@ -579,6 +618,10 @@ class DazeDataUpdateCoordinator(
                 self._network_uid,
             )
             self._sessions_missing_logged = False
+            # Latched on the first success and never cleared: once a
+            # figure has been read it stays known, so a later 404 must
+            # not blank it.
+            self._sessions_ever_read = True
             # Armed only on success: arming first meant a transient
             # error silently froze the history for five minutes.
             self._next_session_fetch = time.time() + SESSION_FETCH_INTERVAL

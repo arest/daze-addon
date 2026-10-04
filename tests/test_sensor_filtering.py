@@ -378,6 +378,160 @@ def test_restore_state_keys_all_name_a_real_sensor() -> None:
     assert not orphans, f"RESTORE_STATE_KEYS names removed sensors: {orphans}"
 
 
+# ------------------------------------------------------------------
+# Restoring the cumulative sensors across a restart
+#
+# RESTORE_STATE_KEYS exists so the three total_increasing counters
+# survive a Home Assistant restart. It could not: the coordinator
+# performs its first refresh inside async_setup_entry, before the
+# platforms are forwarded, so coordinator.data is always populated by
+# the time an entity reaches async_added_to_hass -- and the restore
+# bailed out on exactly that condition. The stored value was read on
+# no startup path that occurs in practice, and native_value never
+# consulted it once data existed.
+# ------------------------------------------------------------------
+
+
+def _restore_entity(key: str, data: Any, stored: str | None) -> Any:
+    """Build a real sensor entity with a stored previous state."""
+    entity = sensor.DazeWallboxSensorEntity.__new__(
+        sensor.DazeWallboxSensorEntity
+    )
+    entity.coordinator = type("C", (), {"data": data, "serial_number": "S"})()
+    entity.entity_description = _sensor_spec(key)
+    entity._restored_value = None
+
+    class LastState:
+        state = stored
+
+    async def _last_state() -> Any:
+        return None if stored is None else LastState()
+
+    entity.async_get_last_state = _last_state
+    return entity
+
+
+def _sensor_spec(key: str) -> Any:
+    """Return the entity description the platform builds for ``key``."""
+    for description in sensor.SENSORS:
+        if description.key == key:
+            return description
+    raise KeyError(key)
+
+
+def _give_the_stub_bases_an_added_to_hass() -> None:
+    """Let the entity's ``super().async_added_to_hass()`` call resolve.
+
+    The stub base classes are bare types, so the real method's first
+    statement would raise AttributeError. Patched once, on the first
+    base that will accept an attribute -- ``object`` will not.
+    """
+    for base in sensor.DazeWallboxSensorEntity.__mro__[1:]:
+        if base is object:
+            continue
+        if "async_added_to_hass" in vars(base):
+            return
+
+        async def _noop(self: Any) -> None:
+            return None
+
+        base.async_added_to_hass = _noop  # type: ignore[attr-defined]
+        return
+
+
+_give_the_stub_bases_an_added_to_hass()
+
+
+def _add_to_hass(entity: Any) -> None:
+    """Run the real async_added_to_hass against the stubbed bases."""
+    import asyncio
+
+    asyncio.run(sensor.DazeWallboxSensorEntity.async_added_to_hass(entity))
+
+
+def test_a_cumulative_sensor_restores_even_though_the_charger_polled() -> (
+    None
+):
+    """The stored value is read on the startup path that really happens.
+
+    The coordinator's first refresh completes before any entity is
+    added, so gating the restore on "no coordinator data yet" skipped
+    it on every real restart.
+    """
+    entity = _restore_entity(
+        "lifetime_energy", {"lifetime_energy": None}, "50000"
+    )
+
+    _add_to_hass(entity)
+
+    assert entity._restored_value == 50000.0, (
+        "the stored lifetime was not read because the charger had polled"
+    )
+
+
+def test_an_absent_cumulative_reading_falls_back_to_the_stored_one() -> None:
+    """An unreadable lifetime shows the last known figure, not a gap.
+
+    These three sensors are total_increasing. A gap is recorded as
+    nothing, which is survivable, but the figure returning from zero
+    afterwards is not: Home Assistant reads that as a meter reset.
+    Holding the last known value keeps the series monotonic.
+    """
+    entity = _restore_entity(
+        "lifetime_energy", {"lifetime_energy": None}, "50000"
+    )
+    _add_to_hass(entity)
+
+    assert entity.native_value == 50000.0, (
+        "an absent lifetime reported unavailable over a known figure"
+    )
+
+
+def test_a_live_cumulative_reading_wins_over_the_stored_one() -> None:
+    """The restore is a fallback, never an override."""
+    entity = _restore_entity(
+        "lifetime_energy", {"lifetime_energy": 61000.0}, "50000"
+    )
+    _add_to_hass(entity)
+
+    assert entity.native_value == 61000.0, (
+        "a stored value masked the charger's own reading"
+    )
+
+
+def test_a_non_cumulative_sensor_does_not_fall_back() -> None:
+    """Only the cumulative counters hold their last value.
+
+    Instant power is a measurement. Holding the last one would show a
+    car still drawing 3.5 kW after the charger stopped reporting,
+    which is worse than showing nothing.
+    """
+    entity = _restore_entity(
+        "instant_power", {"instantPowerAsWatt": None}, "3500"
+    )
+    _add_to_hass(entity)
+
+    assert entity._restored_value is None, (
+        "a measurement sensor read a stored value it must never use"
+    )
+    assert entity.native_value is None, (
+        "a measurement sensor held its last reading"
+    )
+
+
+def test_an_unparseable_stored_value_does_not_crash_the_restore() -> None:
+    """A stored "unavailable" is likely, not exotic, for these sensors."""
+    entity = _restore_entity(
+        "lifetime_energy", {"lifetime_energy": None}, "unavailable"
+    )
+
+    _add_to_hass(entity)  # must not raise
+
+    assert entity.native_value is None, (
+        "an unusable stored state was published as a reading"
+    )
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

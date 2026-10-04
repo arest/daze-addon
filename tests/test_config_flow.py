@@ -17,7 +17,7 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_DIR = ROOT / "custom_components" / "daze"
@@ -281,6 +281,299 @@ def test_clearing_a_sensor_actually_clears_it() -> None:
     assert const.CONF_GRID_POWER_SENSOR not in result["data"], (
         "a cleared sensor was silently restored from the stale options"
     )
+
+# ------------------------------------------------------------------
+# Re-authentication
+#
+# The flow Home Assistant starts when the stored tokens stop working,
+# and the one path in config_flow.py that must update an existing
+# entry rather than create a second one. It had no coverage at all,
+# despite expiring tokens being this integration's most common
+# failure: the access token lives an hour, and a refresh token that
+# is revoked or rotated out sends every user through here.
+# ------------------------------------------------------------------
+
+
+EVSE_RECORD: dict[str, Any] = {
+    "evseName": "Daze HomeTT",
+    "serialNumber": "SER1",
+    "deviceProfile": "DT01",
+    "firmwareVersion": "1.2.3",
+    "softwareVersion": "4.5.6",
+}
+
+
+class FakeAuthClient:
+    """An auth client whose token validation does what a test says."""
+
+    def __init__(self, access_token: str, refresh_token: str) -> None:
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+
+    async def async_validate_tokens(self, session: Any) -> bool:
+        if isinstance(FakeAuthClient.result, Exception):
+            raise FakeAuthClient.result
+        return True
+
+    result: ClassVar[Any] = None
+
+
+class FakeApiClient:
+    """Returns one account, one network and one charger."""
+
+    def __init__(self, auth_client: Any, session: Any) -> None:
+        self.auth_client = auth_client
+
+    async def async_get_user_info(self) -> dict[str, Any]:
+        return {"email": "someone@example.com"}
+
+    async def async_get_networks(self, email: str) -> list[dict[str, Any]]:
+        return [{"uid": "net-1", "name": "Home"}]
+
+    async def async_get_evses(self, network_uid: str) -> list[dict[str, Any]]:
+        return [dict(EVSE_RECORD)]
+
+
+class FakeConfigEntries:
+    """Records the entry updates and reloads a re-auth performs."""
+
+    def __init__(self) -> None:
+        self.updated: list[tuple[Any, dict[str, Any]]] = []
+        self.reloaded: list[str] = []
+
+    def async_update_entry(self, entry: Any, data: dict[str, Any]) -> None:
+        entry.data = dict(data)
+        self.updated.append((entry, dict(data)))
+
+    async def async_reload(self, entry_id: str) -> None:
+        self.reloaded.append(entry_id)
+
+    def async_get_entry(self, entry_id: str) -> Any:
+        return self.entries.get(entry_id)
+
+    entries: ClassVar[dict[str, Any]] = {}
+
+
+class FakeHass:
+    """Just the config_entries registry the re-auth path reaches for."""
+
+    def __init__(self) -> None:
+        self.config_entries = FakeConfigEntries()
+
+
+class ExistingEntry:
+    """The entry already set up, which a re-auth must update in place."""
+
+    def __init__(self) -> None:
+        self.entry_id = "ENTRY1"
+        self.title = "Daze HomeTT"
+        self.data: dict[str, Any] = {
+            const.CONF_ACCESS_TOKEN: "old-access",
+            const.CONF_REFRESH_TOKEN: "old-refresh",
+            const.CONF_SERIAL_NUMBER: "SER1",
+        }
+        self.options: dict[str, Any] = {}
+
+
+def _reauth_flow() -> tuple[Any, Any, Any]:
+    """Build a config flow already in a re-authentication."""
+    FakeAuthClient.result = None
+
+    flow = config_flow.DazeConfigFlow()
+    hass = FakeHass()
+    entry = ExistingEntry()
+    FakeConfigEntries.entries = {entry.entry_id: entry}
+
+    flow.hass = hass
+    flow.context = {"entry_id": entry.entry_id, "source": "reauth"}
+    flow.unique_ids: list[Any] = []
+
+    async def _set_unique_id(unique_id: Any) -> None:
+        flow.unique_ids.append(unique_id)
+
+    flow.async_set_unique_id = _set_unique_id
+    flow._abort_if_unique_id_configured = lambda: (_ for _ in ()).throw(
+        AssertionError(
+            "a re-authentication went down the new-entry path and "
+            "aborted itself as a duplicate"
+        )
+    )
+    flow.created: list[dict[str, Any]] = []
+    flow.aborted: list[str] = []
+    flow.forms: list[str] = []
+
+    def _create_entry(*, title: str, data: dict[str, Any]) -> dict[str, Any]:
+        flow.created.append({"title": title, "data": data})
+        return {"type": "create_entry"}
+
+    def _abort(*, reason: str) -> dict[str, Any]:
+        flow.aborted.append(reason)
+        return {"type": "abort", "reason": reason}
+
+    def _show_form(*, step_id: str, **kwargs: Any) -> dict[str, Any]:
+        flow.forms.append(step_id)
+        return {"type": "form", "step_id": step_id, **kwargs}
+
+    flow.async_create_entry = _create_entry
+    flow.async_abort = _abort
+    flow.async_show_form = _show_form
+
+    config_flow.DazeAuthClient = FakeAuthClient
+    config_flow.DazeApiClient = FakeApiClient
+
+    return flow, hass, entry
+
+
+def _run(awaitable: Any) -> Any:
+    return asyncio.run(awaitable)
+
+
+def _complete_reauth(
+    flow: Any,
+    access_token: str = "new-access",
+    refresh_token: str = "new-refresh",
+) -> Any:
+    """Walk a re-auth all the way through, as the user would.
+
+    Re-authentication is not a single step: the token form hands off
+    to network selection, which hands off to confirmation, and only
+    the confirm step writes the entry. A test that stops after the
+    token form observes none of that.
+    """
+    result = _run(
+        flow.async_step_user(
+            {
+                const.CONF_ACCESS_TOKEN: access_token,
+                const.CONF_REFRESH_TOKEN: refresh_token,
+            }
+        )
+    )
+    if result.get("step_id") != "network":
+        return result
+
+    result = _run(flow.async_step_network({const.CONF_NETWORK_UID: "net-1"}))
+    if result.get("step_id") != "confirm":
+        return result
+
+    return _run(
+        flow.async_step_confirm({const.CONF_EVSE_NAME: "Daze HomeTT"})
+    )
+
+
+def test_reauth_picks_up_the_entry_it_was_started_for() -> None:
+    """The flow has to know which entry it is re-authenticating.
+
+    Without it the confirm step takes the new-entry branch and tries
+    to add a second copy of a charger that is already configured.
+    """
+    flow, _hass, entry = _reauth_flow()
+
+    _run(flow.async_step_reauth())
+
+    assert flow._reauth_entry is entry, (
+        "the re-auth flow did not find the entry it was started for"
+    )
+
+
+def test_reauth_asks_for_tokens_again() -> None:
+    """Re-auth starts at the token form, not at network selection."""
+    flow, _hass, _entry = _reauth_flow()
+
+    result = _run(flow.async_step_reauth())
+
+    assert result["step_id"] == "user", (
+        f"re-auth opened the {result.get('step_id')!r} step"
+    )
+
+
+def test_reauth_updates_the_existing_entry_rather_than_adding_one() -> None:
+    """The whole point of the path: one charger, new tokens.
+
+    Creating an entry here would leave the user with a duplicate
+    device and the original still broken.
+    """
+    flow, hass, entry = _reauth_flow()
+    _run(flow.async_step_reauth())
+
+    _complete_reauth(flow)
+
+    assert flow.created == [], "re-authentication created a second entry"
+    assert len(hass.config_entries.updated) == 1, (
+        "re-authentication did not update the existing entry"
+    )
+
+    _updated_entry, data = hass.config_entries.updated[0]
+    assert data[const.CONF_ACCESS_TOKEN] == "new-access"
+    assert data[const.CONF_REFRESH_TOKEN] == "new-refresh"
+
+
+def test_reauth_reloads_the_entry_so_the_new_tokens_take_effect() -> None:
+    """Rewriting the tokens is not enough on its own.
+
+    The coordinator holds an auth client built from the old ones, so
+    without the reload the entities keep failing with the credentials
+    the user has just replaced.
+    """
+    flow, hass, entry = _reauth_flow()
+    _run(flow.async_step_reauth())
+
+    _complete_reauth(flow)
+
+    assert hass.config_entries.reloaded == [entry.entry_id], (
+        "the re-authenticated entry was never reloaded"
+    )
+
+
+def test_reauth_finishes_by_aborting_as_successful() -> None:
+    """Home Assistant closes the repair on this specific reason."""
+    flow, _hass, _entry = _reauth_flow()
+    _run(flow.async_step_reauth())
+
+    _complete_reauth(flow)
+
+    assert flow.aborted == ["reauth_successful"], (
+        f"re-auth ended with {flow.aborted!r}"
+    )
+
+
+def test_reauth_with_still_invalid_tokens_stays_on_the_form() -> None:
+    """A rejected token re-prompts rather than updating the entry.
+
+    The user pasting a token that is itself expired is the likely
+    mistake here, and writing it over the stored one would replace a
+    broken credential with a different broken credential.
+    """
+    flow, hass, _entry = _reauth_flow()
+    _run(flow.async_step_reauth())
+    FakeAuthClient.result = config_flow.AuthError("expired")
+
+    result = _complete_reauth(flow, "also-expired", "also-expired")
+
+    assert result["step_id"] == "user"
+    assert result["errors"]["base"] == "invalid_token"
+    assert hass.config_entries.updated == [], (
+        "a rejected token was written over the stored one"
+    )
+
+
+def test_reauth_strips_a_pasted_token_before_validating_it() -> None:
+    """Tokens are copied out of a browser, and arrive wrapped.
+
+    The stripping exists in the user step already; this pins it on
+    the re-auth path, which is where a hand-pasted token is most
+    likely to come from.
+    """
+    flow, hass, _entry = _reauth_flow()
+    _run(flow.async_step_reauth())
+
+    _complete_reauth(flow, '  "new-access"\n', '"new-refresh"  ')
+
+    _updated_entry, data = hass.config_entries.updated[0]
+    assert data[const.CONF_ACCESS_TOKEN] == "new-access", (
+        f"stored {data[const.CONF_ACCESS_TOKEN]!r} verbatim"
+    )
+    assert data[const.CONF_REFRESH_TOKEN] == "new-refresh"
+
 
 def _main() -> int:
     """Run every test in this module and report results."""
