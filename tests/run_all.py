@@ -34,6 +34,7 @@ STANDALONE = (
     "test_config_flow.py",
     "test_sensor_filtering.py",
     "test_diagnostics.py",
+    "test_session.py",
 )
 
 
