@@ -18,8 +18,15 @@ from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
 
-# test_control, test_sensor and test_session re-implement the logic
-# they check rather than importing it, and are driven by pytest only.
+# test_sensor.py is absent below because it has no _main() and so is
+# driven by pytest alone. Registering it here without one would print
+# "ok" with a blank summary and add 0 to the total — a suite reported as
+# passing having run nothing.
+#
+# test_control.py was deleted rather than registered. Its 38 tests
+# imported nothing from custom_components, so none of them could fail on
+# a regression in the integration; test_entities.py covers the same
+# behaviours against the real entities.
 STANDALONE = (
     "test_auth_getuser.py",
     "test_payload.py",
