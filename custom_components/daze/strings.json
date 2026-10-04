@@ -99,7 +99,7 @@
         "name": "Photovoltaic Present"
       },
       "is_three_phase": {
-        "name": "Three-Phase Supply"
+        "name": "Three-Phase Charger"
       },
       "lifetime_energy": {
         "name": "Lifetime Energy"

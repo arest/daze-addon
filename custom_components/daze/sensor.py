@@ -82,6 +82,11 @@ def _to_description(spec: EVSESensorSpec) -> DazeSensorEntityDescription:
     """Convert one canonical EVSE sensor spec into a HA description."""
     return DazeSensorEntityDescription(
         key=spec.key,
+        # The catalog key is also the translation key. Without this the
+        # names in strings.json have nothing to bind to, and every
+        # sensor falls back to its device_class default — which is what
+        # "Power", "Current" and "Energy" in the UI were.
+        translation_key=spec.key,
         device_class=(
             _DEVICE_CLASS_MAP[spec.device_class]
             if spec.device_class is not None
@@ -256,6 +261,7 @@ class DazeSolarSurplusSensor(
     """
 
     _attr_has_entity_name = True
+    _attr_translation_key = "solar_surplus"
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT

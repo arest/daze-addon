@@ -67,6 +67,7 @@ def _install_stubs() -> None:
     @dataclass(frozen=True, kw_only=True)
     class _SensorEntityDescription:
         key: str
+        translation_key: Any = None
         device_class: Any = None
         state_class: Any = None
         native_unit_of_measurement: Any = None
@@ -295,6 +296,29 @@ def test_the_filtered_keys_all_exist_in_the_catalog() -> None:
 
     for key in sensor.PHASE_2_3_SENSOR_KEYS:
         assert key in catalog_keys, f"{key} is not a catalog sensor"
+
+
+def test_every_sensor_description_carries_its_translation_key() -> None:
+    """The binding that makes strings.json take effect at all.
+
+    ``_to_description`` passes the catalog key through as the
+    description's translation_key. Drop that one argument and every
+    sensor silently falls back to its device_class default — "Power",
+    "Current", "Energy" — which is the state this integration shipped
+    in until 2026-10-04, with 23 written names bound to nothing.
+
+    Asserted against the descriptions the module actually built, not
+    against the catalog. A check that read the catalog could not fail
+    on this, because the catalog keys are unchanged either way: the
+    defect is the argument never reaching the description.
+    """
+    assert sensor.SENSORS, "no sensor descriptions were built"
+
+    for description in sensor.SENSORS:
+        assert description.translation_key == description.key, (
+            f"{description.key} has translation_key="
+            f"{description.translation_key!r}"
+        )
 
 
 # ------------------------------------------------------------------

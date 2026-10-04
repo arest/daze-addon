@@ -102,7 +102,7 @@
         "entity_category": "diagnostic"
       },
       "is_three_phase": {
-        "name": "Alimentazione trifase",
+        "name": "Caricatore trifase",
         "entity_category": "diagnostic"
       },
       "lifetime_energy": {

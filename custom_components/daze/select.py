@@ -88,6 +88,7 @@ class DazeWallboxSelectEntity(
     """Select entity to choose the Daze wallbox operation mode."""
 
     _attr_has_entity_name = True
+    _attr_translation_key = "operation_mode"
     _attr_options = ATTR_OPTIONS
 
     def __init__(
@@ -268,6 +269,7 @@ class DazeSolarControlSelect(
     """
 
     _attr_has_entity_name = True
+    _attr_translation_key = "solar_control"
     _attr_options = SOLAR_MODE_OPTIONS
 
     def __init__(

@@ -231,6 +231,99 @@ def test_clamping_only_ever_lowers_the_floor() -> None:
         assert with_setting <= bare, (configured, bare, with_setting)
 
 
+def _declared_translation_keys() -> set[str]:
+    """Every translation key the integration actually asks Home Assistant for.
+
+    Two sources: the literal ``_attr_translation_key`` on each entity
+    class, and the sensor catalog, whose key is passed through as the
+    description's translation_key.
+
+    Note what this cannot see. Reading the catalog assumes the
+    pass-through in ``sensor._to_description`` exists; delete that one
+    argument and this set is unchanged, so the locale check below stays
+    green while every sensor loses its name. Verified by mutation, and
+    it is why ``test_every_sensor_description_carries_its_translation_key``
+    in tests/test_sensor_filtering.py asserts against the built
+    descriptions instead. This module has no Home Assistant stubs and
+    so cannot import sensor.py to do that itself.
+    """
+    import re
+
+    keys: set[str] = set()
+    for path in PACKAGE_DIR.glob("*.py"):
+        keys |= set(
+            re.findall(
+                r'_attr_translation_key = "([^"]+)"', path.read_text()
+            )
+        )
+
+    catalog = _load("daze_catalog_for_names", "sensor_catalog.py")
+    keys |= {spec.key for spec in catalog.EVSE_SENSOR_CATALOG}
+    return keys
+
+
+def _defined_names(filename: str) -> set[str]:
+    """Every entity name key defined in a translation file."""
+    import json
+
+    data = json.loads((PACKAGE_DIR / filename).read_text())
+    return {key for platform in data["entity"].values() for key in platform}
+
+
+def test_every_translation_key_resolves_in_every_locale() -> None:
+    """A declared key with no matching name is a silently unnamed entity.
+
+    This is not hypothetical. Before 2026-10-04 no entity in this
+    integration set a translation key at all, so all 23 names in
+    strings.json bound to nothing and every entity fell back to its
+    device_class default — "Power", "Current", "Energy" — which is what
+    the operator saw in the UI. Nothing failed, because nothing checked
+    that the two halves met.
+
+    Asserted in both directions and for every locale, because each
+    direction is a different defect: a declared key with no name shows
+    the fallback, and a defined name with no key is dead weight that
+    outlives the entity it was written for.
+    """
+    declared = _declared_translation_keys()
+    assert declared, "no translation keys found — the scan itself is broken"
+
+    for filename in ("strings.json", "translations/it.json"):
+        defined = _defined_names(filename)
+        assert not declared - defined, (
+            f"{filename}: declared but undefined: "
+            f"{sorted(declared - defined)}"
+        )
+        assert not defined - declared, (
+            f"{filename}: defined but unused: {sorted(defined - declared)}"
+        )
+
+
+def test_every_entity_class_declares_a_translation_key() -> None:
+    """has_entity_name without a name or key falls back to device_class.
+
+    Every entity class in this integration sets
+    ``_attr_has_entity_name = True``. That tells Home Assistant the
+    entity supplies only its own name and the device supplies the rest
+    — so a class that then supplies neither a name nor a translation
+    key gets the device_class default instead, which is how 23 written
+    names went unused for the life of the project.
+
+    The sensor platform is exempt by construction: its single entity
+    class takes the key from the catalog through the description rather
+    than from a class attribute.
+    """
+    import re
+
+    for filename in ("switch.py", "number.py", "select.py"):
+        text = (PACKAGE_DIR / filename).read_text()
+        named = len(re.findall(r"_attr_has_entity_name = True", text))
+        keyed = len(re.findall(r'_attr_translation_key = "', text))
+        assert keyed == named, (
+            f"{filename}: {named} entity classes, {keyed} translation keys"
+        )
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

@@ -72,6 +72,7 @@ class DazeWallboxNumberEntity(
     """Number entity to set the max charging current on a Daze wallbox."""
 
     _attr_has_entity_name = True
+    _attr_translation_key = "max_charging_current"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_native_step = NATIVE_STEP
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.MILLIAMPERE
@@ -320,6 +321,7 @@ class DazeWallboxPowerEntity(
     """
 
     _attr_has_entity_name = True
+    _attr_translation_key = "max_charging_power"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_native_step = POWER_STEP_W
     _attr_native_unit_of_measurement = UnitOfPower.WATT
@@ -550,6 +552,7 @@ class DazeSolarReserveEntity(
     """Watts to leave for the house before the car gets any."""
 
     _attr_has_entity_name = True
+    _attr_translation_key = "solar_reserve"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_native_min_value = 0
     _attr_native_max_value = MAX_SOLAR_RESERVE
