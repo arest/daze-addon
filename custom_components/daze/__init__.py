@@ -109,8 +109,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Forward setup to entity platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Register update listener for config entry changes
-    entry.add_update_listener(_async_update_listener)
+    # Register update listener for config entry changes, and drop it
+    # when the entry unloads. Without that, a reload stacks a second
+    # listener on the same entry and every later options change fires
+    # the reload chain once per stacked listener.
+    #
+    # Guarded rather than wrapped directly. Commit 1af6e95 removed an
+    # unguarded `async_on_unload(entry.add_update_listener(...))` on the
+    # grounds that add_update_listener returns None in current Home
+    # Assistant and the wrapper crashed unload with a NoneType-callable
+    # error. The documented contract is that it returns an unsubscribe
+    # callable, and this repository's own FakeEntry models it that way,
+    # so the two disagree and neither can be settled here — Home
+    # Assistant is not installed. The crash that prompted 1af6e95 is
+    # also fully explained by the service registrations fixed in
+    # f560a41, which really did hand None to async_on_unload three
+    # times. This spelling is correct under either contract.
+    unsubscribe = entry.add_update_listener(_async_update_listener)
+    if unsubscribe is not None:
+        entry.async_on_unload(unsubscribe)
 
     # Register services
     _async_register_services(hass, entry, coordinator)

@@ -531,6 +531,89 @@ def test_a_real_options_change_still_reloads_the_entry() -> None:
     assert hass.config_entries.reload_calls == [entry.entry_id]
 
 
+def _setup_entry_with(hass: Any, entry: Any) -> None:
+    """Run the real async_setup_entry against the fakes."""
+    original_setup_coordinator = daze_init.async_setup_coordinator
+    original_async_get = daze_init.dr.async_get
+    daze_init.async_setup_coordinator = _fake_async_setup_coordinator
+    daze_init.dr.async_get = lambda _hass: FakeDeviceRegistry()
+    try:
+        asyncio.run(daze_init.async_setup_entry(hass, entry))
+    finally:
+        daze_init.async_setup_coordinator = original_setup_coordinator
+        daze_init.dr.async_get = original_async_get
+
+
+def test_the_update_listener_is_dropped_on_unload() -> None:
+    """A reload otherwise stacks listeners on the same entry.
+
+    add_update_listener returns an unsubscribe callable. Leaving it
+    unregistered means each reload adds another listener, and the next
+    options change runs _async_update_listener once per stacked copy —
+    so a reserve slider nudge after two reloads fires three reload
+    checks, each racing the others.
+    """
+    entry = FakeEntry(
+        data={
+            const.CONF_SERIAL_NUMBER: "SER1",
+            const.CONF_NETWORK_UID: "NET1",
+        }
+    )
+    hass = FakeHass()
+
+    _setup_entry_with(hass, entry)
+
+    assert len(entry.update_listeners) == 1, "the listener was not added"
+
+    for callback in entry.unload_callbacks:
+        result = callback()
+        if asyncio.iscoroutine(result):
+            asyncio.run(result)
+
+    assert entry.update_listeners == [], (
+        "the update listener survived unload — a reload would stack a "
+        "second one"
+    )
+
+
+def test_setup_survives_an_update_listener_that_returns_nothing() -> None:
+    """The other half of the 1af6e95 question.
+
+    That commit removed an unguarded
+    async_on_unload(entry.add_update_listener(...)) because
+    add_update_listener was said to return None in current Home
+    Assistant, making unload raise on a NoneType callable. The
+    documented contract says it returns an unsubscribe callable, and
+    FakeEntry models it that way, so the two disagree and Home
+    Assistant is not installed here to settle it.
+
+    Rather than pick a side, setup is written to be correct under
+    either. This drives the version that returns None and asserts both
+    that setup completes and that nothing uncallable reaches the unload
+    list — which is exactly the crash 1af6e95 described.
+    """
+
+    class NoUnsubscribeEntry(FakeEntry):
+        def add_update_listener(self, listener: Any) -> Any:
+            self.update_listeners.append(listener)
+            return None
+
+    entry = NoUnsubscribeEntry(
+        data={
+            const.CONF_SERIAL_NUMBER: "SER1",
+            const.CONF_NETWORK_UID: "NET1",
+        }
+    )
+    hass = FakeHass()
+
+    _setup_entry_with(hass, entry)
+
+    assert len(entry.update_listeners) == 1
+    for callback in entry.unload_callbacks:
+        assert callback is not None, "None reached async_on_unload"
+        assert callable(callback), "a non-callable reached async_on_unload"
+
+
 def test_a_failed_setup_leaves_no_solar_timer_or_listener_running() -> None:
     """async_unload_entry never runs when setup itself fails.
 
