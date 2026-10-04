@@ -29,6 +29,7 @@ STANDALONE = (
     "test_qa_solar_invariants.py",
     "test_solar_controller.py",
     "test_solar_sensor.py",
+    "test_coordinator.py",
     "test_init_entry.py",
     "test_config_flow.py",
     "test_sensor_filtering.py",

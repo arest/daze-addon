@@ -603,9 +603,21 @@ class DazeDataUpdateCoordinator(
                     self._network_uid,
                 )
 
-            # A missing endpoint genuinely means no history, unlike a
-            # transient error, so an empty list is the right answer.
-            return []
+            # Not an empty list. A 404 says this account cannot read
+            # the endpoint, which is not the same fact as the charger
+            # having no sessions: an account that had a history and
+            # then starts receiving 404s would have it overwritten
+            # with [], dropping lifetime_energy to zero. That sensor
+            # is total_increasing, so Home Assistant records a meter
+            # reset and counts the whole lifetime a second time when
+            # the endpoint comes back — the exact failure the None
+            # return in this method's docstring exists to prevent.
+            #
+            # On a first-ever 404 the cache is already empty, so the
+            # session and lifetime sensors stay empty either way and
+            # the logged message above still describes what the user
+            # sees.
+            return None
 
         except ApiAuthError:
             # Auth errors on session endpoint are unexpected (the
