@@ -29,6 +29,7 @@
     },
     "abort": {
       "already_configured": "Questa wallbox è già configurata.",
+      "single_instance_allowed": "È supportata una sola voce dell'integrazione Daze Wallbox. I servizi agiscono sulla wallbox configurata senza indicare un'entità, quindi una seconda voce renderebbe ambiguo quale caricatore raggiunge una chiamata di servizio.",
       "reauth_successful": "Re-autenticazione completata con successo."
     }
   },

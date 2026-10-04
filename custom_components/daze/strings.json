@@ -32,6 +32,7 @@
     },
     "abort": {
       "already_configured": "This wallbox is already configured.",
+      "single_instance_allowed": "Only one Daze Wallbox integration entry is supported. The services act on the configured wallbox without entity targeting, so a second entry would make it ambiguous which charger a service call reaches.",
       "reauth_successful": "Re-authentication was successful."
     }
   },

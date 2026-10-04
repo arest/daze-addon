@@ -231,6 +231,38 @@ def test_clamping_only_ever_lowers_the_floor() -> None:
         assert with_setting <= bare, (configured, bare, with_setting)
 
 
+def test_only_one_config_entry_is_allowed() -> None:
+    """Two entries would make every service call ambiguous.
+
+    The three services are registered at domain level and act on the
+    coordinator captured when they were registered — there is no entity
+    or device target in their schema. With a second entry,
+    ``daze.start_charge`` reaches whichever charger registered last,
+    silently, and a reload swaps which one that is. Enforced in the
+    manifest so Home Assistant refuses the second entry in the UI
+    rather than leaving it to the flow.
+
+    Asserted with the abort strings, because the flag alone aborts with
+    an untranslated reason the user cannot act on.
+    """
+    import json
+
+    manifest = json.loads((PACKAGE_DIR / "manifest.json").read_text())
+    assert manifest.get("single_config_entry") is True, (
+        "manifest does not restrict the integration to one entry"
+    )
+
+    for filename in ("strings.json", "translations/it.json"):
+        data = json.loads((PACKAGE_DIR / filename).read_text())
+        aborts = data["config"]["abort"]
+        assert "single_instance_allowed" in aborts, (
+            f"{filename} has no reason for the refused second entry"
+        )
+        assert aborts["single_instance_allowed"].strip(), (
+            f"{filename}: the reason is empty"
+        )
+
+
 def _declared_translation_keys() -> set[str]:
     """Every translation key the integration actually asks Home Assistant for.
 
