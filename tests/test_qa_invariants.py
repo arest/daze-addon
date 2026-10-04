@@ -252,7 +252,7 @@ def test_only_one_config_entry_is_allowed() -> None:
         "manifest does not restrict the integration to one entry"
     )
 
-    for filename in ("strings.json", "translations/it.json"):
+    for filename in _translation_files():
         data = json.loads((PACKAGE_DIR / filename).read_text())
         aborts = data["config"]["abort"]
         assert "single_instance_allowed" in aborts, (
@@ -294,6 +294,45 @@ def _declared_translation_keys() -> set[str]:
     return keys
 
 
+def _translation_files() -> list[str]:
+    """Every file that has to carry the names, discovered not listed.
+
+    Previously this was the hard-coded pair ("strings.json",
+    "translations/it.json"), which is how an integration whose entity
+    names were entirely missing in English passed this suite 15 out
+    of 15. Two things were wrong with that list and both mattered:
+
+    - ``en.json`` was absent, and it is the file Home Assistant
+      actually reads for an English installation. ``strings.json`` is
+      the build-time source a core integration's translations are
+      generated from and is never loaded for a custom one, so the
+      list checked one real locale and one file that is not a locale
+      at all -- while the test's own name promised "every locale".
+
+    - Being a list at all, a language added later is unchecked until
+      somebody remembers to extend it, which is the same failure
+      waiting to happen again.
+
+    Globbing the directory fixes both. A new locale is covered the
+    moment it is added, and the file that is read at runtime cannot
+    be the one left out.
+    """
+    translations = sorted(
+        f"translations/{path.name}"
+        for path in (PACKAGE_DIR / "translations").glob("*.json")
+    )
+    assert translations, "no translation files found — the scan is broken"
+    assert "translations/en.json" in translations, (
+        "translations/en.json is missing; every entity falls back to the "
+        "bare device name on an English installation"
+    )
+    # strings.json is kept in the sweep deliberately. It is not loaded
+    # at runtime, but it is the source the locale files are generated
+    # from, so a key missing here is a key the next generated locale
+    # will be missing too.
+    return ["strings.json", *translations]
+
+
 def _defined_names(filename: str) -> set[str]:
     """Every entity name key defined in a translation file."""
     import json
@@ -312,15 +351,16 @@ def test_every_translation_key_resolves_in_every_locale() -> None:
     the operator saw in the UI. Nothing failed, because nothing checked
     that the two halves met.
 
-    Asserted in both directions and for every locale, because each
-    direction is a different defect: a declared key with no name shows
+    Asserted in both directions and across every file that carries
+    the names -- discovered by globbing translations/, not listed --
+    because each direction is a different defect: a declared key with no name shows
     the fallback, and a defined name with no key is dead weight that
     outlives the entity it was written for.
     """
     declared = _declared_translation_keys()
     assert declared, "no translation keys found — the scan itself is broken"
 
-    for filename in ("strings.json", "translations/it.json"):
+    for filename in _translation_files():
         defined = _defined_names(filename)
         assert not declared - defined, (
             f"{filename}: declared but undefined: "
