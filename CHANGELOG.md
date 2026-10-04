@@ -7,6 +7,26 @@ This project is based on
 Restello. Fork maintenance and the changes listed below are by Pedro Tarrinho
 unless otherwise noted.
 
+## [0.2.3] - 2026-10-04
+
+### Fixed
+
+- Gave every entity its name. The integration defined 23 names but bound none of them, so Home Assistant fell back to device-class defaults and the dashboard read "Power", "Current" and "Energy" instead.
+- Renamed the three-phase diagnostic from "Three-Phase Supply" to "Three-Phase Charger". The field it reads describes the charger, not the supply feeding the house.
+- Removed the integration's services when its entry unloads, instead of leaving them registered against a stopped coordinator and a closed API client.
+- Stopped the solar controller's timer and grid-sensor listener when setup itself fails, instead of leaving both running for the life of the process.
+- Removed the options update listener on unload, so reloading no longer stacks another listener and multiplies the work of every later options change.
+- Stopped reporting a lifetime energy of zero when the session history had never been readable, which a total-increasing sensor recorded as a meter reset.
+- Restored the last known sensor values on startup. The restore was guarded by a condition that is always true by the time an entity is added, so it never ran.
+
+### Changed
+
+- Restricted the integration to a single config entry. The services act on the configured wallbox without entity targeting, so a second entry would make it ambiguous which charger a service call reaches.
+
+### Added
+
+- Added a read-only diagnostic probe for the two charger questions no test can settle: what the three-phase field means, and whether the schedule guard fires.
+
 ## [0.2.2] - 2026-10-04
 
 ### Fixed
@@ -107,6 +127,7 @@ unless otherwise noted.
 
 - Initial upstream release by Andrea Restello.
 
+[0.2.3]: https://github.com/tarrinho/daze-addon/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/tarrinho/daze-addon/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/tarrinho/daze-addon/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/tarrinho/daze-addon/compare/v0.1.6...v0.2.0
