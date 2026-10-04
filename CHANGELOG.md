@@ -7,6 +7,21 @@ This project is based on
 Restello. Fork maintenance and the changes listed below are by Pedro Tarrinho
 unless otherwise noted.
 
+## [0.2.2] - 2026-10-04
+
+### Fixed
+
+- Kept the recharge session history when the API returns 404 for the endpoint, instead of replacing it with an empty list and resetting lifetime energy to zero.
+- Withheld the second and third phase current and voltage readings unless the charger reports a three-phase supply, so an unconnected input is not published as a measurement.
+
+### Changed
+
+- Removed the per-session and next-scheduled-charge sensors, which reported no value until a charge had completed.
+
+### Added
+
+- Added tests for the coordinator session cache and background command retries, for the solar surplus sensor attributes, for the phase filter, and for the recharge session model.
+
 ## [0.2.1] - 2026-10-03
 
 ### Changed
@@ -92,6 +107,7 @@ unless otherwise noted.
 
 - Initial upstream release by Andrea Restello.
 
+[0.2.2]: https://github.com/tarrinho/daze-addon/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/tarrinho/daze-addon/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/tarrinho/daze-addon/compare/v0.1.6...v0.2.0
 [0.1.6]: https://github.com/tarrinho/daze-addon/compare/v0.1.3...v0.1.6
