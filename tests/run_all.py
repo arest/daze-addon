@@ -32,6 +32,7 @@ STANDALONE = (
     # here that cannot be undone by a later commit. See rules.md
     # section 0, and the module's own docstring.
     "test_no_device_identifiers.py",
+    "test_translations.py",
     "test_auth_getuser.py",
     "test_payload.py",
     "test_qa_invariants.py",

@@ -1,0 +1,165 @@
+{
+  "title": "Daze Wallbox",
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "access_token": "Access Token",
+          "refresh_token": "Refresh Token"
+        },
+        "description": "Enter your Daze access token and refresh token.\n\nYou can obtain these from the Daze web portal (webportal.dazeservice.com) or the developer console."
+      },
+      "network": {
+        "data": {
+          "network_uid": "Network"
+        },
+        "description": "Select the network (installation) to monitor."
+      },
+      "confirm": {
+        "title": "Confirmation",
+        "description": "Network: **{network_name}**\nCharger: **{evse_name}** ({serial_number})\nModel: **{device_profile}**\n\nPress Submit to finish setup.",
+        "data": {
+          "evse_name": "Device Name"
+        }
+      }
+    },
+    "error": {
+      "invalid_token": "The provided tokens are invalid or expired. Please check and try again.",
+      "network_error": "Could not connect to the Daze API. Please check your internet connection and try again.",
+      "no_networks": "No networks found for this account.",
+      "no_evses": "No wallbox found in the selected network.",
+      "unknown": "An unexpected error occurred. Please try again."
+    },
+    "abort": {
+      "already_configured": "This wallbox is already configured.",
+      "single_instance_allowed": "Only one Daze Wallbox integration entry is supported. The services act on the configured wallbox without entity targeting, so a second entry would make it ambiguous which charger a service call reaches.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "services": {
+    "set_charging_current": {
+      "name": "Set charging current",
+      "description": "Set the maximum charging current on a Daze wallbox."
+    },
+    "start_charge": {
+      "name": "Start charging",
+      "description": "Start charging on a Daze wallbox."
+    },
+    "stop_charge": {
+      "name": "Stop charging",
+      "description": "Stop charging on a Daze wallbox."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "instant_power": {
+        "name": "Instant Power"
+      },
+      "delivered_energy": {
+        "name": "Delivered Energy"
+      },
+      "charging_current_l1": {
+        "name": "Charging Current L1"
+      },
+      "charging_current_l2": {
+        "name": "Charging Current L2"
+      },
+      "charging_current_l3": {
+        "name": "Charging Current L3"
+      },
+      "ac_voltage_l1": {
+        "name": "AC Voltage L1"
+      },
+      "ac_voltage_l2": {
+        "name": "AC Voltage L2"
+      },
+      "ac_voltage_l3": {
+        "name": "AC Voltage L3"
+      },
+      "board_temperature": {
+        "name": "Board Temperature"
+      },
+      "case_temperature": {
+        "name": "Case Temperature"
+      },
+      "evse_status": {
+        "name": "EVSE Status",
+        "state": {
+          "idle": "Idle",
+          "waiting_for_ev": "Waiting for vehicle",
+          "charging": "Charging",
+          "paused": "Paused",
+          "error": "Error",
+          "offline": "Offline"
+        }
+      },
+      "grid_max_power": {
+        "name": "Grid Max Power"
+      },
+      "is_photovoltaic": {
+        "name": "Photovoltaic Present"
+      },
+      "is_three_phase": {
+        "name": "Three-Phase Charger"
+      },
+      "lifetime_energy": {
+        "name": "Lifetime Energy"
+      },
+      "total_sessions": {
+        "name": "Total Sessions"
+      },
+      "solar_surplus": {
+        "name": "Solar surplus"
+      }
+    },
+    "switch": {
+      "charge_control": {
+        "name": "Charge Control"
+      }
+    },
+    "number": {
+      "max_charging_current": {
+        "name": "Current"
+      },
+      "max_charging_power": {
+        "name": "Power"
+      },
+      "solar_reserve": {
+        "name": "Solar reserve"
+      }
+    },
+    "select": {
+      "operation_mode": {
+        "name": "Operation Mode"
+      },
+      "solar_control": {
+        "name": "Solar control"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Daze Wallbox options",
+        "description": "How often to poll the Daze cloud API, and which sensor reports signed grid power. Positive values mean import; negative values mean export. The sensor is only needed for solar control; leave it empty otherwise.",
+        "data": {
+          "poll_interval": "Polling interval (seconds)",
+          "grid_power_sensor": "Signed grid power sensor",
+          "supply_phases": "Grid supply"
+        },
+        "data_description": {
+          "grid_power_sensor": "Positive values mean import from the grid; negative values mean export to the grid.",
+          "supply_phases": "How many phases feed the house, not the charger. A three-phase meter reports surplus added up across all three, and a single-phase charger can only use one of them, so solar control will not arm until this is set."
+        }
+      }
+    }
+  },
+  "selector": {
+    "supply_phases": {
+      "options": {
+        "single": "Single-phase",
+        "three": "Three-phase"
+      }
+    }
+  }
+}
