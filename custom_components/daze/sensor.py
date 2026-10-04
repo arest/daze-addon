@@ -131,6 +131,57 @@ def _build_sensor_descriptions(
 SENSORS: tuple[DazeSensorEntityDescription, ...] = _build_sensor_descriptions()
 
 
+# The second and third phase readings a single-phase charger reports.
+# Measured on a DT01: L2 reads 1 V and L3 reads 7 V with nothing
+# connected to either, and both currents read 0 mA. Those are not
+# measurements, they are an unconnected ADC, and a user reading 7 V on
+# L3 has reasonable grounds to think they have a wiring fault.
+PHASE_2_3_SENSOR_KEYS: frozenset[str] = frozenset(
+    {
+        "charging_current_l2",
+        "charging_current_l3",
+        "ac_voltage_l2",
+        "ac_voltage_l3",
+    }
+)
+
+
+def is_unreportable_phase_sensor(
+    key: str, data: dict[str, Any]
+) -> bool:
+    """Return True when an L2/L3 sensor must not publish its value.
+
+    Three states, not two, and the third is the one that matters:
+
+    - ``evseIsThreePhase`` is true: the reading is real. Publish it.
+    - ``evseIsThreePhase`` is false: the reading is an unconnected
+      input. Withhold it.
+    - ``evseIsThreePhase`` is **absent**: the phase count is unknown.
+      Withhold it as well.
+
+    The absent case is deliberately not treated as "assume three-phase
+    and publish". Rule 5 of the project's QA notes says absence of
+    information is never grounds for acting, and publishing is the
+    action here: a wrong reading of 7 V is worse than an unavailable
+    one, because the unavailable sensor is honest about what is known
+    and the 7 V is not. Note that this costs a three-phase install on a
+    payload that omits the flag its L2/L3 sensors, which is the
+    intended trade and the reason it is written down.
+
+    Args:
+        key: The sensor key from the catalog.
+        data: The merged coordinator payload.
+
+    Returns:
+        True if the value must be withheld.
+
+    """
+    if key not in PHASE_2_3_SENSOR_KEYS:
+        return False
+
+    return data.get("evseIsThreePhase") is not True
+
+
 class DazeWallboxSensorEntity(
     CoordinatorEntity[DazeDataUpdateCoordinator], RestoreEntity, SensorEntity
 ):
@@ -182,18 +233,8 @@ class DazeWallboxSensorEntity(
             if value is None:
                 return None
 
-            # Single-phase chargers return junk in L2/L3 fields
-            # (e.g. 1 V, 7 V). Hide them unless the charger is
-            # declared three-phase.
-            if (
-                self.entity_description.key
-                in (
-                    "charging_current_l2",
-                    "charging_current_l3",
-                    "ac_voltage_l2",
-                    "ac_voltage_l3",
-                )
-                and not data.get("evseIsThreePhase")
+            if is_unreportable_phase_sensor(
+                self.entity_description.key, data
             ):
                 return None
 
