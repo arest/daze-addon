@@ -492,7 +492,7 @@ def test_reauth_updates_the_existing_entry_rather_than_adding_one() -> None:
     Creating an entry here would leave the user with a duplicate
     device and the original still broken.
     """
-    flow, hass, entry = _reauth_flow()
+    flow, hass, _entry = _reauth_flow()
     _run(flow.async_step_reauth())
 
     _complete_reauth(flow)
