@@ -54,7 +54,13 @@ JOSE_HEADER_KEYS = frozenset({"alg", "typ", "cty", "kid", "enc", "zip"})
 
 PATTERNS: dict[str, re.Pattern[str]] = {
     # The charger's own serial. A fixture needs "SER1", never this.
-    "Daze serial number": re.compile(r"\b\d{2}DT\d{7}\b"),
+    #
+    # Case-insensitive: the charger reports the serial upper-case, but
+    # a value copied out of a URL, a log line or a lower-cased
+    # identifier reaches a file as "26dt..." just as easily, and the
+    # strict form missed exactly that. Confirmed to add no false
+    # positive against the tracked tree.
+    "Daze serial number": re.compile(r"\b\d{2}DT\d{7}\b", re.IGNORECASE),
     # Network UIDs are GUIDs. A fixture needs "net-1", never this.
     "GUID (network UID)": re.compile(
         r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
@@ -156,9 +162,40 @@ def test_the_serial_pattern_matches_the_shape_it_is_meant_to() -> None:
 
     assert pattern.search(f"evse {shaped} reported")
     assert pattern.search(shaped)
+    assert pattern.search(shaped.lower()), (
+        "a lower-cased serial slipped the pattern"
+    )
     assert not pattern.search("SER1")
     assert not pattern.search("serial_number")
     assert not pattern.search("DT01")
+
+
+def test_a_serial_missing_its_letters_is_not_a_near_miss_to_rely_on() -> None:
+    """Pins the shape that produced a false green, so it cannot again.
+
+    Someone verifying this gate planted a test serial built from a
+    masked form -- "26D" followed by digits, the masking having hidden
+    the T. It did not match, the gate passed, and for a minute that
+    read as the scanner being broken rather than the probe being
+    malformed.
+
+    The lesson generalises past this one pattern: a mutation built
+    from a remembered or redacted shape proves nothing about the
+    pattern, only about the memory. Build the probe from the pattern,
+    as the test above does.
+    """
+    pattern = PATTERNS["Daze serial number"]
+
+    missing_the_t = "26D" + "0" * 7
+    assert not pattern.search(missing_the_t), (
+        "the pattern matched a string that is not a serial; a probe "
+        "built from this shape would prove nothing"
+    )
+
+    with_the_t = "26DT" + "0" * 7
+    assert pattern.search(with_the_t), (
+        "the pattern missed a correctly shaped serial"
+    )
 
 
 def test_the_guid_pattern_does_not_fire_on_fixture_names() -> None:
