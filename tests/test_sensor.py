@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -45,11 +46,15 @@ SAMPLE_DATA = {
     "lastACVoltageL1": 230,
     "lastACVoltageL2": 231,
     "lastACVoltageL3": 229,
-    "boardTemperature": 32,
-    "caseTemperature": 28,
+    # The field names the Daze API actually returns. An earlier copy of
+    # this fixture used the upstream guesses (boardTemperature,
+    # gridMaxPower, is_photovoltaic), which no longer match the catalog
+    # and so asserted nothing: every value_fn returned None.
+    "lastBoardL1Temperature": 32,
+    "lastCaseTemperature": 28,
     "evseStatus": "charging",
-    "gridMaxPower": 22000,
-    "is_photovoltaic": True,
+    "supplyGridMaxPower": 22000,
+    "photovoltaic": True,
     "evseIsThreePhase": False,
     "last_session_energy": 18000,
     "last_session_duration": 120,
@@ -158,12 +163,22 @@ class TestStatusAndHelpers:
     def test_evse_status_mapping(self) -> None:
         assert get_evse_status({"evseStatus": "charging"}) == "charging"
         assert get_evse_status({"evseStatus": "PLAY_CHARGE"}) == "charging"
-        assert get_evse_status({"evseStatus": "waiting_for_car"}) == "idle"
+        # Reported as its own state rather than folded into idle: the
+        # charger passes through it after a start, before the car draws,
+        # and the charge switch holds on through it.
+        assert get_evse_status({"evseStatus": "waiting_for_car"}) == "waiting_for_ev"
         assert get_evse_status({"evseStatus": None}) is None
         assert get_evse_status({}) is None
 
     def test_status_map_values_are_canonical(self) -> None:
-        canonical = {"idle", "charging", "paused", "error", "offline"}
+        canonical = {
+            "idle",
+            "charging",
+            "paused",
+            "error",
+            "offline",
+            "waiting_for_ev",
+        }
         assert set(EVSE_STATUS_MAP.values()).issubset(canonical)
 
     def test_presence_on_off(self) -> None:
@@ -173,9 +188,33 @@ class TestStatusAndHelpers:
         assert presence_on_off({}, "k") is None
 
     def test_next_scheduled_charge_fallback_order(self) -> None:
-        assert (
-            get_next_scheduled_charge({"nextScheduledCharge": "A", "scheduleTime": "B"})
-            == "A"
+        """Earlier keys win, and every answer is a real datetime.
+
+        A timestamp sensor rejects a bare string with "Invalid
+        datetime", so the helper parses rather than passing the API
+        value through. The strings here are ISO timestamps for that
+        reason: opaque placeholders would parse to None and the
+        fallback order would stop being observable.
+        """
+        first = "2026-09-16T22:00:00+00:00"
+        later = "2026-09-17T07:30:00+00:00"
+
+        chosen = get_next_scheduled_charge(
+            {"nextScheduledCharge": first, "scheduleTime": later}
         )
-        assert get_next_scheduled_charge({"scheduleTime": "B"}) == "B"
+        assert chosen == datetime(2026, 9, 16, 22, 0, tzinfo=timezone.utc)
+
+        assert get_next_scheduled_charge({"scheduleTime": later}) == datetime(
+            2026, 9, 17, 7, 30, tzinfo=timezone.utc
+        )
         assert get_next_scheduled_charge({}) is None
+
+    def test_next_scheduled_charge_rejects_an_unparseable_value(self) -> None:
+        """A value that is not a time is dropped, not handed on.
+
+        nextScheduleInfo arrives as an object, and passing it (or any
+        other non-timestamp) to the sensor made Home Assistant refuse
+        every state write.
+        """
+        assert get_next_scheduled_charge({"scheduleTime": "A"}) is None
+        assert get_next_scheduled_charge({"nextScheduleInfo": {}}) is None
