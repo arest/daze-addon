@@ -247,16 +247,32 @@ class FakeConfigEntries:
 
 
 class FakeServices:
-    """Stand-in for hass.services, recording registered handlers."""
+    """Stand-in for hass.services, recording registrations and removals.
+
+    ``async_register`` returns **None**, as the real
+    ``ServiceRegistry.async_register`` does. An earlier version of this
+    fake returned ``object()``, which made
+    ``entry.async_on_unload(hass.services.async_register(...))`` look
+    like it registered a teardown callback. It does not: the real call
+    hands ``None`` to ``async_on_unload``, so the services were never
+    removed on unload and the next setup re-registered over them. The
+    fake's return value was the only thing hiding it.
+    """
 
     def __init__(self) -> None:
         self.handlers: dict[str, Any] = {}
+        self.removed: list[tuple[str, str]] = []
 
     def async_register(
         self, domain: str, service: str, handler: Any, schema: Any = None
-    ) -> Any:
+    ) -> None:
+        """Record the handler and return None, as the real call does."""
         self.handlers[service] = handler
-        return object()
+
+    def async_remove(self, domain: str, service: str) -> None:
+        """Record a removal and drop the handler."""
+        self.removed.append((domain, service))
+        self.handlers.pop(service, None)
 
 
 class FakeHass:
@@ -509,6 +525,39 @@ def test_a_real_options_change_still_reloads_the_entry() -> None:
     asyncio.run(daze_init._async_update_listener(hass, entry))
 
     assert hass.config_entries.reload_calls == [entry.entry_id]
+
+
+def test_unloading_removes_the_services_it_registered() -> None:
+    """Services are global to the domain and outlive the entry.
+
+    ``hass.services.async_register`` returns ``None``, so
+    ``entry.async_on_unload(hass.services.async_register(...))``
+    registers nothing — it hands ``None`` to a function expecting a
+    callable. The services therefore survived the entry that created
+    them, holding a closure over a dead coordinator and a closed API
+    client, and a later setup registered over them.
+
+    Every callback the entry collected must also be callable, which is
+    the part the ``None`` return breaks before it breaks anything else.
+    """
+    hass, entry, _coordinator = _register(REACHABLE_DATA)
+
+    assert entry.unload_callbacks, "setup registered no unload callbacks"
+    for callback in entry.unload_callbacks:
+        assert callable(callback), (
+            "a non-callable was handed to async_on_unload — "
+            "async_register returns None"
+        )
+        callback()
+
+    assert sorted(hass.services.removed) == sorted(
+        [
+            (DOMAIN, const.SERVICE_START_CHARGE),
+            (DOMAIN, const.SERVICE_STOP_CHARGE),
+            (DOMAIN, const.SERVICE_SET_CHARGING_CURRENT),
+        ]
+    ), f"services left registered after unload: {hass.services.handlers}"
+    assert hass.services.handlers == {}
 
 
 # ------------------------------------------------------------------

@@ -285,31 +285,33 @@ def _async_register_services(
                 f"Failed to set charging current: {err}"
             ) from err
 
-    # Register each service with cleanup on config entry unload
-    entry.async_on_unload(
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_START_CHARGE,
-            _handle_start_charge,
-            schema=vol.Schema({}),
-        )
-    )
-    entry.async_on_unload(
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_STOP_CHARGE,
-            _handle_stop_charge,
-            schema=vol.Schema({}),
-        )
-    )
-    entry.async_on_unload(
-        hass.services.async_register(
-            DOMAIN,
+    # Register each service, and arrange for its removal when the entry
+    # unloads.
+    #
+    # Not `entry.async_on_unload(hass.services.async_register(...))`.
+    # async_register returns None, so that spelling hands None to a
+    # function that expects a callable: nothing is torn down, and the
+    # services outlive the entry holding a closure over a dead
+    # coordinator and a closed API client. The removal has to be its
+    # own callback.
+    services: tuple[tuple[str, Any, Any], ...] = (
+        (SERVICE_START_CHARGE, _handle_start_charge, vol.Schema({})),
+        (SERVICE_STOP_CHARGE, _handle_stop_charge, vol.Schema({})),
+        (
             SERVICE_SET_CHARGING_CURRENT,
             _handle_set_charging_current,
-            schema=SET_CHARGING_CURRENT_SCHEMA,
-        )
+            SET_CHARGING_CURRENT_SCHEMA,
+        ),
     )
+
+    for name, handler, schema in services:
+        hass.services.async_register(DOMAIN, name, handler, schema=schema)
+        # Bound as a default argument rather than closed over: the loop
+        # variable is rebound on every pass, so a closure would remove
+        # the last service three times and leave the first two behind.
+        entry.async_on_unload(
+            lambda service=name: hass.services.async_remove(DOMAIN, service)
+        )
 
     _LOGGER.debug(
         "Registered Daze services for entry %s", entry.entry_id
