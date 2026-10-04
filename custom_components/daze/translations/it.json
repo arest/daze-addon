@@ -165,14 +165,14 @@
     "step": {
       "init": {
         "title": "Opzioni Daze Wallbox",
-        "description": "Ogni quanto interrogare l'API cloud di Daze e quali sensori riportano prelievo e immissione in rete. I sensori di rete servono solo per il controllo solare; lasciali vuoti altrimenti.",
+        "description": "Ogni quanto interrogare l'API cloud di Daze e quale sensore riporta la potenza netta di rete. I valori positivi indicano prelievo; quelli negativi immissione. Il sensore serve solo per il controllo solare; lascialo vuoto altrimenti.",
         "data": {
           "poll_interval": "Intervallo di aggiornamento (secondi)",
-          "grid_import_sensor": "Sensore di potenza prelevata dalla rete",
-          "grid_export_sensor": "Sensore di potenza immessa in rete",
+          "grid_power_sensor": "Sensore di potenza netta di rete",
           "supply_phases": "Alimentazione di rete"
         },
         "data_description": {
+          "grid_power_sensor": "I valori positivi indicano prelievo dalla rete; quelli negativi indicano immissione nella rete.",
           "supply_phases": "Quante fasi alimentano la casa, non il caricatore. Un contatore trifase riporta il surplus sommato sulle tre fasi e un caricatore monofase può usarne solo una, quindi il controllo solare non si attiva finché non è impostato."
         }
       }

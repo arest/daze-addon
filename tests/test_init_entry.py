@@ -414,7 +414,10 @@ def test_async_setup_entry_seeds_the_controllers_reserve_from_options() -> (
             const.CONF_SERIAL_NUMBER: "SER1",
             const.CONF_NETWORK_UID: "NET1",
         },
-        options={CONF_SOLAR_RESERVE: 1500},
+        options={
+            CONF_SOLAR_RESERVE: 1500,
+            const.CONF_GRID_POWER_SENSOR: "sensor.grid_power",
+        },
     )
     hass = FakeHass()
 
@@ -431,6 +434,9 @@ def test_async_setup_entry_seeds_the_controllers_reserve_from_options() -> (
     controller = hass.data[DOMAIN][entry.entry_id]["solar_controller"]
     assert controller.reserve_w == 1500, (
         "the persisted reserve never reached the controller"
+    )
+    assert controller._grid_power_entity == "sensor.grid_power", (
+        "the signed grid-power sensor was not wired into the controller"
     )
 
 

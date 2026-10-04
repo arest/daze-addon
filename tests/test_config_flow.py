@@ -234,6 +234,21 @@ def test_saving_the_form_applies_a_submitted_field_over_the_old_value() -> (
 
     assert result["data"]["poll_interval"] == 60
 
+def test_options_form_has_one_signed_grid_power_selector() -> None:
+    """Options expose one optional power entity, not the removed pair."""
+    result = asyncio.run(_handler().async_step_init())
+    schema = result["data_schema"]
+
+    assert const.CONF_GRID_POWER_SENSOR in schema
+    assert "grid_import_sensor" not in schema
+    assert "grid_export_sensor" not in schema
+    grid_selector = schema[const.CONF_GRID_POWER_SENSOR]
+    assert grid_selector.config.kwargs == {
+        "domain": "sensor",
+        "device_class": "power",
+    }
+
+
 def test_clearing_a_sensor_actually_clears_it() -> None:
     """Every field this form owns — the grid power sensor and the
     supply-phases question — is vol.Optional with no default, so a

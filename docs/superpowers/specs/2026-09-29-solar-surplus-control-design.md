@@ -18,7 +18,7 @@ Today this is possible only as user-written YAML
 (`docs/solar-surplus-charging.md`). That works, but requires assembling
 template sensors, filters, input helpers and three automations, and
 substituting entity names correctly. This moves the logic into the
-integration so it works after picking two sensors.
+integration so it works after picking one signed grid-power sensor.
 
 ---
 
@@ -26,7 +26,7 @@ integration so it works after picking two sensors.
 
 | Question | Decision |
 |---|---|
-| Available signal | Separate grid import and export sensors, both positive |
+| Available signal | One signed grid-power sensor: positive import, negative export |
 | Control scope | Limit **and** start/stop |
 | Below the charger's floor | Stop. Pure solar, never import to charge |
 | Manual override | Touching the control disarms solar mode |
@@ -140,12 +140,14 @@ The select restores its state across restarts, and defaults to
 
 ### Configuration
 
-The existing options flow gains two entity pickers — the grid import
-sensor and the grid export sensor — and one question: is the grid
-supply single-phase or three-phase? All three are required before solar
-control can leave `off`, and that requirement is enforced where it can
-be explained, in the control that arms it, rather than by making the
-fields mandatory in a form the user may be opening for another reason.
+The existing options flow gains one entity picker for signed grid power
+and one question: is the grid supply single-phase or three-phase? Both
+are required before solar control can leave `off`, and that requirement is
+enforced where it can be explained, in the control that arms it, rather
+than by making the fields mandatory in a form the user may be opening for
+another reason. The grid-power sensor reports positive import and negative
+export; users with separate positive import/export sensors must combine them
+into a signed helper first.
 
 Timings are constants rather than options. They are derived from
 measured charger behaviour, not preference, and exposing them invites
@@ -160,13 +162,14 @@ gets nothing before the car does.
 ## Surplus
 
 ```
-surplus = car_draw + export − import
+surplus = car_draw − grid_power
 ```
 
-The car's own draw is added back because it is not surplus that has
-disappeared — it is surplus already in use. Without that term the
-controller would see its own consumption as a deficit and wind itself
-down to zero.
+Positive `grid_power` means import and negative `grid_power` means export,
+so subtraction both removes household import and adds exported power. The
+car's own draw is added back because it is not surplus that has disappeared
+— it is surplus already in use. Without that term the controller would see
+its own consumption as a deficit and wind itself down to zero.
 
 Smoothed internally over a five-minute window. Raw grid readings move
 with every kettle and oven cycle; acting on them would thrash a charger

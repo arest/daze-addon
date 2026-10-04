@@ -1,6 +1,6 @@
 """Drive the charger from solar surplus.
 
-Reads the user's grid sensors, assembles the state the decision needs,
+Reads the user's signed grid-power sensor, assembles the state the decision needs,
 and carries out whatever it returns. The decision itself lives in
 solar.py, which has no Home Assistant coupling and is where the
 behaviour is tested.
@@ -61,7 +61,7 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Recognised power units for the user's grid sensors, keyed by the
+# Recognised power units for the user's signed grid-power sensor, keyed by the
 # lower-cased unit_of_measurement attribute. A kW inverter sensor read
 # as watts would understate surplus by a factor of a thousand and
 # still look like a plausible number, so anything else is treated the

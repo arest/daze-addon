@@ -27,8 +27,8 @@ Three entities from this integration, named for your charger. Replace
 | What the car is drawing now | `sensor.daze_homett_instant_power` |
 
 And one from your own setup, which this example calls
-`sensor.grid_power`: **instantaneous grid power in watts, negative when
-exporting**. Most energy meters expose this. If yours reports import and
+`sensor.grid_power`: **instantaneous grid power in watts, positive when
+importing and negative when exporting**. Most energy meters expose this. If yours reports import and
 export as two separate positive sensors, combine them first:
 
 ```yaml

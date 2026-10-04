@@ -231,6 +231,7 @@ NOT_CHARGING_DATA: dict[str, Any] = {
 def build(
     data: dict[str, Any] | None = None,
     supply_phases: str | None = "single",
+    grid_power_entity: str | None = "sensor.grid_power",
 ) -> tuple[Any, Any, Any]:
     """Build a controller wired to stubs.
 
@@ -252,18 +253,26 @@ def build(
     controller = controller_module.SolarController(
         hass=hass,
         coordinator=coordinator,
-        grid_power_entity="sensor.grid_power",
+        grid_power_entity=grid_power_entity,
         supply_phases=supply_phases,
     )
     return controller, coordinator, hass
 
 
-def test_surplus_uses_both_sensors_and_the_car_draw() -> None:
+def test_surplus_uses_signed_grid_power_and_car_draw() -> None:
     """3000 W drawn plus 5000 W exported is 8000 W available."""
     controller, _, _ = build()
     controller.mode = controller_module.SolarMode.SIMULATE
     asyncio.run(controller.async_tick())
     assert controller.surplus_w == 8000
+
+
+def test_empty_sensor_configuration_is_not_configured() -> None:
+    """An empty entity ID must not count as configured."""
+    controller, _, _ = build(grid_power_entity="")
+
+    assert controller.configured is False
+    assert controller.unsupported_reason is not None
 
 
 def test_off_is_the_default_and_does_nothing_observable() -> None:
@@ -441,12 +450,7 @@ def test_a_kilowatt_sensor_is_converted_to_watts() -> None:
     """4.0 kW exported is 4000 W, the same signal a W sensor would give."""
     controller, _, hass = build()
     controller.mode = controller_module.SolarMode.SIMULATE
-    hass.states.set("sensor.grid_power", "-4000", {"unit_of_measurement": "W"})
-
-
-
-
-
+    hass.states.set("sensor.grid_power", "-4.0", {"unit_of_measurement": "kW"})
 
     asyncio.run(controller.async_tick())
 
@@ -463,9 +467,7 @@ def test_an_unrecognised_unit_stops_nothing() -> None:
     """
     controller, coordinator, hass = build()
     controller.mode = controller_module.SolarMode.ACTIVE
-    hass.states.set("sensor.grid_power", "0", {"unit_of_measurement": "lux"})
-
-
+    hass.states.set("sensor.grid_power", "2500", {"unit_of_measurement": "lux"})
 
     asyncio.run(controller.async_tick())
 

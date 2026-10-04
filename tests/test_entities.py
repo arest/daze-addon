@@ -1245,7 +1245,7 @@ def _solar_select(configured: bool = False) -> tuple[Any, Any]:
         @property
         def unsupported_reason(self):
             if not self.configured:
-                return "no grid sensors have been chosen"
+                return "no signed grid power sensor has been chosen"
             return None
 
     controller = Ctl()
@@ -1258,8 +1258,8 @@ def _solar_select(configured: bool = False) -> tuple[Any, Any]:
     return entity, controller
 
 
-def test_solar_select_is_unavailable_without_sensors() -> None:
-    """Both grid sensors are required before it can do anything."""
+def test_solar_select_is_unavailable_without_sensor() -> None:
+    """A signed grid power sensor is required before it can do anything."""
     entity, _ = _solar_select(configured=False)
 
     assert entity.available is False
@@ -1277,7 +1277,7 @@ def test_solar_select_refuses_to_arm_without_sensors() -> None:
 
     Checked for both non-off options, not just "active": narrowing the
     guard to `option == "active"` would let a user or automation select
-    "simulate" with no grid sensors configured. The controller would
+    "simulate" with no signed grid power sensor configured. The controller would
     then tick, find nothing to read, and do nothing — while the select
     still displays "simulate", as though a dry run were under way. That
     is "leaving off" in every way that matters, just quietly.
@@ -1375,7 +1375,7 @@ def test_setting_the_reserve_writes_it_to_config_entry_options() -> None:
     assert entity.native_value == 1500
     assert entry.options[const_mod.CONF_SOLAR_RESERVE] == 1500
     # The rest of the options must survive the write, or saving a
-    # reserve would silently drop the user's grid sensors.
+    # reserve would silently drop the user's grid sensor configuration.
     assert entry.options["poll_interval"] == 30
 
 

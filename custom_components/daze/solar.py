@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 # How often the controller re-evaluates. The charger takes seconds to
 # apply a change and may need retries, so a faster cadence fights

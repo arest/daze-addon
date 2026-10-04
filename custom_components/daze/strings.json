@@ -158,14 +158,14 @@
     "step": {
       "init": {
         "title": "Daze Wallbox options",
-        "description": "How often to poll the Daze cloud API, and which sensors report your grid import and export. The grid sensors are only needed for solar control; leave them empty otherwise.",
+        "description": "How often to poll the Daze cloud API, and which sensor reports signed grid power. Positive values mean import; negative values mean export. The sensor is only needed for solar control; leave it empty otherwise.",
         "data": {
           "poll_interval": "Polling interval (seconds)",
-          "grid_import_sensor": "Grid import power sensor",
-          "grid_export_sensor": "Grid export power sensor",
+          "grid_power_sensor": "Signed grid power sensor",
           "supply_phases": "Grid supply"
         },
         "data_description": {
+          "grid_power_sensor": "Positive values mean import from the grid; negative values mean export to the grid.",
           "supply_phases": "How many phases feed the house, not the charger. A three-phase meter reports surplus added up across all three, and a single-phase charger can only use one of them, so solar control will not arm until this is set."
         }
       }

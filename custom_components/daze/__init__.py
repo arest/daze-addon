@@ -152,8 +152,8 @@ def _reload_signature(entry: ConfigEntry) -> tuple[Any, Any]:
 
     The solar reserve is deliberately absent. It is applied live by the
     controller, so rewriting it is not a reason to rebuild the entry;
-    everything else — credentials, the poll interval, the grid sensors
-    the controller is constructed with — is.
+    everything else — credentials, the poll interval, the signed grid-power
+    sensor and supply phases the controller is constructed with — is.
     """
     options = {
         key: value

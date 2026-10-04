@@ -31,6 +31,7 @@ STANDALONE = (
     "test_solar_sensor.py",
     "test_init_entry.py",
     "test_config_flow.py",
+    "test_sensor_filtering.py",
 )
 
 

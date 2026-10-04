@@ -185,9 +185,17 @@ class DazeWallboxSensorEntity(
             # Single-phase chargers return junk in L2/L3 fields
             # (e.g. 1 V, 7 V). Hide them unless the charger is
             # declared three-phase.
-            if self.entity_description.key in ("charging_current_l2", "charging_current_l3", "ac_voltage_l2", "ac_voltage_l3"):
-                if not data.get("evseIsThreePhase"):
-                    return None
+            if (
+                self.entity_description.key
+                in (
+                    "charging_current_l2",
+                    "charging_current_l3",
+                    "ac_voltage_l2",
+                    "ac_voltage_l3",
+                )
+                and not data.get("evseIsThreePhase")
+            ):
+                return None
 
             return value
 

@@ -242,34 +242,8 @@ EVSE_SENSOR_CATALOG: tuple[EVSESensorSpec, ...] = (
         options=("on", "off"),
         value_fn=lambda data: presence_on_off(data, "evseIsThreePhase"),
     ),
-    EVSESensorSpec(
-        key="last_session_energy",
-        device_class="energy",
-        state_class="total_increasing",
-        native_unit_of_measurement="Wh",
-        value_fn=lambda data: data.get("last_session_energy"),
-    ),
-    EVSESensorSpec(
-        key="last_session_duration",
-        native_unit_of_measurement="min",
-        value_fn=lambda data: data.get("last_session_duration"),
-    ),
-    EVSESensorSpec(
-        key="last_session_cost",
-        device_class="monetary",
-        native_unit_of_measurement="EUR",
-        value_fn=lambda data: data.get("last_session_cost"),
-    ),
-    EVSESensorSpec(
-        key="last_session_start",
-        device_class="timestamp",
-        value_fn=lambda data: data.get("last_session_start"),
-    ),
-    EVSESensorSpec(
-        key="last_session_end",
-        device_class="timestamp",
-        value_fn=lambda data: data.get("last_session_end"),
-    ),
+    # Session-dependent sensors removed — they show "Unknown" until the
+    # first charge completes and provide no value in the meantime.
     EVSESensorSpec(
         key="lifetime_energy",
         device_class="energy",
@@ -281,12 +255,6 @@ EVSE_SENSOR_CATALOG: tuple[EVSESensorSpec, ...] = (
         key="total_sessions",
         state_class="total_increasing",
         value_fn=lambda data: data.get("total_sessions"),
-    ),
-    EVSESensorSpec(
-        key="next_scheduled_charge",
-        device_class="timestamp",
-        entity_category="diagnostic",
-        value_fn=get_next_scheduled_charge,
     ),
 )
 

@@ -173,13 +173,15 @@ the first time it is added — a fresh install never actually shows
 `off`. In `simulate` it decides and logs but sends nothing to the
 charger; nothing reaches hardware until you pick `active` yourself.
 
-1. In the integration's options, pick your **grid import** and **grid
-   export** power sensors, and answer **grid supply**: single-phase or
-   three-phase. This is a declaration, not something the integration
-   can detect — the Daze API does not report how many phases feed the
-   house — and solar control refuses to arm until it is answered. If
-   you are upgrading from an earlier version, this is the field that
-   will make solar control refuse to arm until you go and set it.
+1. In the integration's options, pick one **signed grid power** sensor and
+   answer **grid supply**: single-phase or three-phase. Positive grid power
+   means import; negative grid power means export. If your meter exposes
+   separate positive import and export sensors, create a signed helper first
+   as shown in `docs/solar-surplus-charging.md`. Grid supply is a declaration,
+   not something the integration can detect — the Daze API does not report
+   how many phases feed the house — and solar control refuses to arm until it
+   is answered. If you are upgrading from an earlier version, select the new
+   signed sensor here before arming solar control.
 2. Leave **Solar control** on `simulate`. The select's attributes show
    the surplus it sees and what it would have done.
 3. Leave it for a day, then work through the validation checklist
@@ -199,7 +201,7 @@ charge by hand does the same. It does not fight you.
 Solar control refuses to arm rather than guess, and says why in the
 log (`Solar control cannot run: …`). It is unavailable when:
 
-- **Both grid sensors are not set.** It has nothing to measure.
+- **The signed grid power sensor is not set.** It has nothing to measure.
 - **The grid supply has not been declared.** The charger cannot tell
   the integration how many phases feed the house, so you have to say
   so yourself, and there is no default. A three-phase meter reports
