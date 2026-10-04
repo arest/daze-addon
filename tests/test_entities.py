@@ -379,6 +379,98 @@ def refused() -> Exception:
 
 
 # ------------------------------------------------------------------
+# Which field the charger's current is read from
+#
+# _reported_value walks two fields in order and takes the first that
+# is present. Both can appear in one merged payload with different
+# values, so the order decides what the user sees. Swapping it in
+# number.py was invisible to the whole suite until these were added:
+# BASE_DATA carries only the first field, so nothing exercised the
+# precedence against the real entity.
+# ------------------------------------------------------------------
+
+
+def test_the_external_limit_wins_over_the_session_reading() -> None:
+    """maxExternalChargingCurrentInMilliAmps is the setting.
+
+    lastMaxChargingCurrent is what the live session negotiated, which
+    tracks the setting but lags it and reads 0 between sessions.
+    Preferring the session value would show the user the charger's
+    past behaviour where they asked for its configuration.
+    """
+    entity, _, _ = make_number(
+        {
+            **BASE_DATA,
+            "maxExternalChargingCurrentInMilliAmps": 20000,
+            "lastMaxChargingCurrent": 6000,
+        }
+    )
+
+    assert entity.native_value == 20000
+
+
+def test_the_session_reading_is_used_when_the_limit_is_absent() -> None:
+    """The fallback is real: the second field is not decoration."""
+    data = {**BASE_DATA, "lastMaxChargingCurrent": 6000}
+    data.pop("maxExternalChargingCurrentInMilliAmps")
+
+    entity, _, _ = make_number(data)
+
+    assert entity.native_value == 6000
+
+
+def test_a_zero_session_reading_does_not_mask_the_limit() -> None:
+    """lastMaxChargingCurrent reads 0 with no session in progress.
+
+    Zero is a value, not an absence, so a precedence that preferred it
+    would show 0 mA on an idle charger that is configured for 20 A.
+    """
+    entity, _, _ = make_number(
+        {
+            **BASE_DATA,
+            "maxExternalChargingCurrentInMilliAmps": 20000,
+            "lastMaxChargingCurrent": 0,
+        }
+    )
+
+    assert entity.native_value == 20000
+
+
+def test_a_limit_reported_as_zero_is_shown_rather_than_skipped() -> None:
+    """A reported 0 is a reading. Absent is not the same thing.
+
+    The walk takes the first field that ``is not None``. Weakening
+    that to a truthiness check makes a genuine 0 fall through to the
+    session value, so a charger configured to allow nothing would
+    display whatever the last session drew. That is the same
+    absent-is-not-zero confusion commit 7bc5ece fixed at the other
+    end of this function.
+    """
+    entity, _, _ = make_number(
+        {
+            **BASE_DATA,
+            "maxExternalChargingCurrentInMilliAmps": 0,
+            "lastMaxChargingCurrent": 6000,
+        }
+    )
+
+    assert entity.native_value == 0
+
+
+def test_neither_field_reports_nothing_rather_than_zero() -> None:
+    """An unreported limit is not a limit of zero.
+
+    Named for commit 7bc5ece, which fixed exactly that.
+    """
+    data = {**BASE_DATA}
+    data.pop("maxExternalChargingCurrentInMilliAmps")
+
+    entity, _, _ = make_number(data)
+
+    assert entity.native_value is None
+
+
+# ------------------------------------------------------------------
 # The reported bug: changing the value appeared to do nothing
 # ------------------------------------------------------------------
 
