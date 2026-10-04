@@ -79,18 +79,12 @@ class TestCatalogStability:
             "grid_max_power",
             "is_photovoltaic",
             "is_three_phase",
-            "last_session_energy",
-            "last_session_duration",
-            "last_session_cost",
-            "last_session_start",
-            "last_session_end",
             "lifetime_energy",
             "total_sessions",
-            "next_scheduled_charge",
         }
 
     def test_key_count_is_stable(self) -> None:
-        assert len(EVSE_SENSOR_CATALOG) == 22
+        assert len(EVSE_SENSOR_CATALOG) == 16
 
     def test_no_duplicate_keys(self) -> None:
         validate_sensor_catalog(EVSE_SENSOR_CATALOG)
@@ -118,7 +112,6 @@ class TestCatalogStability:
         )
 
         assert _spec_by_key("grid_max_power").entity_category == "diagnostic"
-        assert _spec_by_key("next_scheduled_charge").device_class == "timestamp"
 
 
 class TestValueExtraction:
@@ -135,11 +128,25 @@ class TestValueExtraction:
         assert _spec_by_key("is_three_phase").value_fn(SAMPLE_DATA) == "off"
 
     def test_sessions(self) -> None:
-        assert _spec_by_key("last_session_energy").value_fn(SAMPLE_DATA) == 18000
-        assert _spec_by_key("last_session_duration").value_fn(SAMPLE_DATA) == 120
-        assert _spec_by_key("last_session_cost").value_fn(SAMPLE_DATA) == 4.2
+        """The per-session sensors were removed from the catalog.
+
+        They read None until the first charge completed, so only the
+        two cumulative totals remain. The coordinator still computes
+        the per-session fields; nothing in the catalog exposes them.
+        """
         assert _spec_by_key("lifetime_energy").value_fn(SAMPLE_DATA) == 500000
         assert _spec_by_key("total_sessions").value_fn(SAMPLE_DATA) == 42
+
+        for removed in (
+            "last_session_energy",
+            "last_session_duration",
+            "last_session_cost",
+            "last_session_start",
+            "last_session_end",
+            "next_scheduled_charge",
+        ):
+            with pytest.raises(KeyError):
+                _spec_by_key(removed)
 
     def test_missing_values_return_none(self) -> None:
         empty: dict[str, Any] = {}

@@ -259,14 +259,14 @@ EVSE_SENSOR_CATALOG: tuple[EVSESensorSpec, ...] = (
 )
 
 
+# Only keys the catalog still exposes belong here: the membership test
+# in sensor.py runs against live entities, so a key for a sensor that
+# no longer exists can never match and only misleads the next reader.
 RESTORE_STATE_KEYS: frozenset[str] = frozenset(
     {
         "delivered_energy",
         "lifetime_energy",
         "total_sessions",
-        "last_session_energy",
-        "last_session_cost",
-        "last_session_duration",
     }
 )
 

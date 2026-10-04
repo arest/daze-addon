@@ -88,11 +88,6 @@ If your tokens expire, the integration will automatically prompt you to re-enter
 | `sensor.daze_board_temperature` | Board Temperature | `temperature` | `measurement` | °C |
 | `sensor.daze_case_temperature` | Case Temperature | `temperature` | `measurement` | °C |
 | `sensor.daze_evse_status` | EVSE Status | `enum` | — | idle / waiting_for_ev / charging / paused / error / offline |
-| `sensor.daze_last_session_energy` | Last Session Energy | `energy` | `total_increasing` | Wh |
-| `sensor.daze_last_session_duration` | Last Session Duration | — | — | min |
-| `sensor.daze_last_session_cost` | Last Session Cost | `monetary` | — | EUR |
-| `sensor.daze_last_session_start` | Last Session Start | `timestamp` | — | |
-| `sensor.daze_last_session_end` | Last Session End | `timestamp` | — | |
 | `sensor.daze_lifetime_energy` | Lifetime Energy | `energy` | `total_increasing` | Wh |
 | `sensor.daze_total_sessions` | Total Sessions | — | `total_increasing` | sessions |
 | `sensor.daze_solar_surplus` | Solar surplus | `power` | `measurement` | W |
@@ -104,7 +99,6 @@ If your tokens expire, the integration will automatically prompt you to re-enter
 | `sensor.daze_grid_max_power` | Grid Max Power | `power` | diagnostic |
 | `sensor.daze_is_photovoltaic` | Photovoltaic Present | `enum` | diagnostic |
 | `sensor.daze_is_three_phase` | Three-Phase Supply | `enum` | diagnostic |
-| `sensor.daze_next_scheduled_charge` | Next Scheduled Charge | `timestamp` | diagnostic |
 
 ### Controls
 

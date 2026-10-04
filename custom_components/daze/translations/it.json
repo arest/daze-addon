@@ -105,30 +105,11 @@
         "name": "Alimentazione trifase",
         "entity_category": "diagnostic"
       },
-      "last_session_energy": {
-        "name": "Energia ultima sessione"
-      },
-      "last_session_duration": {
-        "name": "Durata ultima sessione"
-      },
-      "last_session_cost": {
-        "name": "Costo ultima sessione"
-      },
-      "last_session_start": {
-        "name": "Inizio ultima sessione"
-      },
-      "last_session_end": {
-        "name": "Fine ultima sessione"
-      },
       "lifetime_energy": {
         "name": "Energia totale"
       },
       "total_sessions": {
         "name": "Sessioni totali"
-      },
-      "next_scheduled_charge": {
-        "name": "Prossima carica programmata",
-        "entity_category": "diagnostic"
       },
       "solar_surplus": {
         "name": "Surplus solare"
