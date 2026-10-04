@@ -233,11 +233,15 @@ class FakeConfigEntries:
         self.unload_ok = unload_ok
         self.reload_calls: list[str] = []
         self.forward_calls: list[Any] = []
+        # Set to an exception to simulate a platform failing to set up.
+        self.forward_raises: Exception | None = None
 
     async def async_forward_entry_setups(
         self, entry: Any, platforms: Any
     ) -> None:
         self.forward_calls.append((entry, platforms))
+        if self.forward_raises is not None:
+            raise self.forward_raises
 
     async def async_unload_platforms(self, entry: Any, platforms: Any) -> bool:
         return self.unload_ok
@@ -525,6 +529,67 @@ def test_a_real_options_change_still_reloads_the_entry() -> None:
     asyncio.run(daze_init._async_update_listener(hass, entry))
 
     assert hass.config_entries.reload_calls == [entry.entry_id]
+
+
+def test_a_failed_setup_leaves_no_solar_timer_or_listener_running() -> None:
+    """async_unload_entry never runs when setup itself fails.
+
+    Home Assistant calls async_setup_entry; if it raises, the entry is
+    marked failed and the entry's own unload callbacks are run, but
+    async_unload_entry is not. Any teardown that lives only there is
+    skipped. async_start has by then armed a repeating timer and a
+    state-change listener, so without a callback registered at start
+    time both keep running — the timer ticking every two minutes
+    against a coordinator nothing will refresh, and the listener firing
+    on every grid-sensor update for the life of the process.
+
+    Drives the real SolarController rather than a double, because what
+    is being asserted is that its two handles are released, and a fake
+    would assert only that something was called.
+    """
+    entry = FakeEntry(
+        data={
+            const.CONF_SERIAL_NUMBER: "SER1",
+            const.CONF_NETWORK_UID: "NET1",
+        },
+        options={const.CONF_GRID_POWER_SENSOR: "sensor.grid_power"},
+    )
+    hass = FakeHass()
+    hass.config_entries.forward_raises = RuntimeError("platform exploded")
+
+    original_setup_coordinator = daze_init.async_setup_coordinator
+    original_async_get = daze_init.dr.async_get
+    daze_init.async_setup_coordinator = _fake_async_setup_coordinator
+    daze_init.dr.async_get = lambda _hass: FakeDeviceRegistry()
+    try:
+        raised = False
+        try:
+            asyncio.run(daze_init.async_setup_entry(hass, entry))
+        except RuntimeError:
+            raised = True
+        assert raised, "the forwarding failure did not propagate"
+    finally:
+        daze_init.async_setup_coordinator = original_setup_coordinator
+        daze_init.dr.async_get = original_async_get
+
+    controller = hass.data[DOMAIN][entry.entry_id]["solar_controller"]
+    assert controller._cancel_tick is not None, (
+        "the fixture never armed a timer, so this proves nothing"
+    )
+    assert controller._cancel_listener is not None, (
+        "the fixture never armed a listener, so this proves nothing"
+    )
+
+    # What Home Assistant does after a failed setup.
+    for callback in entry.unload_callbacks:
+        result = callback()
+        if asyncio.iscoroutine(result):
+            asyncio.run(result)
+
+    assert controller._cancel_tick is None, "the solar timer kept ticking"
+    assert controller._cancel_listener is None, (
+        "the grid sensor listener was left attached"
+    )
 
 
 def test_unloading_removes_the_services_it_registered() -> None:

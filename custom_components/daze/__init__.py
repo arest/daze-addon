@@ -87,6 +87,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator.solar_controller = solar_controller
     await solar_controller.async_start()
 
+    # Immediately, and before anything below can raise. async_start has
+    # armed a repeating timer and a state-change listener; if the
+    # platform forwarding below fails, Home Assistant runs the entry's
+    # unload callbacks but never calls async_unload_entry, so a teardown
+    # that lives only there leaves both running against a coordinator
+    # nothing will ever refresh.
+    entry.async_on_unload(solar_controller.async_stop)
+
     # Store coordinator and API client in hass.data for entity platforms
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
