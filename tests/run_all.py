@@ -33,6 +33,7 @@ STANDALONE = (
     "test_init_entry.py",
     "test_config_flow.py",
     "test_sensor_filtering.py",
+    "test_diagnostics.py",
 )
 
 
