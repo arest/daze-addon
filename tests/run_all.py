@@ -28,6 +28,10 @@ TESTS_DIR = Path(__file__).resolve().parent
 # a regression in the integration; test_entities.py covers the same
 # behaviours against the real entities.
 STANDALONE = (
+    # First: a commit carrying a device identifier is the one failure
+    # here that cannot be undone by a later commit. See rules.md
+    # section 0, and the module's own docstring.
+    "test_no_device_identifiers.py",
     "test_auth_getuser.py",
     "test_payload.py",
     "test_qa_invariants.py",
