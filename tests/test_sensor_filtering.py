@@ -42,10 +42,19 @@ def _module(name: str, **attributes: Any) -> types.ModuleType:
 
 
 def _install_stubs() -> None:
-    """Install the minimum Home Assistant surface sensor.py imports."""
-    if "homeassistant" in sys.modules:
-        return
+    """Install the minimum Home Assistant surface sensor.py imports.
 
+    Registered unconditionally rather than skipped when a
+    ``homeassistant`` key already exists. Under a whole-tree pytest run
+    another suite gets there first with a thinner set — test_entities.py
+    installs a ``homeassistant.const`` without UnitOfElectricPotential
+    and a ``SensorEntityDescription`` of plain ``object``, neither of
+    which sensor.py can import against — so deferring to it failed
+    collection for this module while running it alone passed. Each
+    suite binds the names it needs immediately after installing them,
+    so overwriting here cannot disturb a suite already loaded, and one
+    loaded later installs its own in turn.
+    """
     _module("homeassistant")
     _module("homeassistant.components")
     _module("homeassistant.helpers")
@@ -154,7 +163,6 @@ _load("const", "const.py")
 _load("payload", "payload.py")
 _load("models", "models.py")
 _load("sensor_catalog", "sensor_catalog.py")
-_load("coordinator", "coordinator.py") if False else None
 
 catalog = sys.modules["daze_sensor_under_test.sensor_catalog"]
 

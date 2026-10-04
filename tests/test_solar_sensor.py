@@ -13,10 +13,8 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_DIR = ROOT / "custom_components" / "daze"
@@ -148,7 +146,7 @@ def test_expected_keys_present() -> None:
 
 def test_all_keys_are_strings() -> None:
     attrs = solar_attributes(SolarMode.SIMULATE, None, 100.0)
-    for k in attrs.keys():
+    for k in attrs:
         assert isinstance(k, str)
 
 def test_stable_across_calls() -> None:
