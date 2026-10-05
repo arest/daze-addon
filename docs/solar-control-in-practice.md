@@ -158,6 +158,44 @@ charger is excluded from household load.
 
 ---
 
+## A day of it
+
+![Solar generation, house consumption, battery and grid across one day,
+with the points where solar control was switched off and on
+marked](images/solar-control-day.png)
+
+The flat blue line is the whole argument of this document. **Grid power
+sits at approximately zero from dawn to dusk**, through PV swings of
+several kilowatts, because the battery absorbs every one of them. A
+grid-meter signal would have reported no surplus at any point in that
+day, and solar control fed from it would never have started the car.
+The yellow and orange traces are where the surplus actually is.
+
+Three things were deliberately done to it:
+
+- **10:00 — switched off by hand**, as a test. Consumption falls away
+  from production, and the surplus that had been going to the car goes
+  to the battery instead.
+- **~10:15 — switched back on.** Consumption rises to follow production
+  again. That is the loop closing: the controller reads the surplus,
+  sets a limit, and the car takes it.
+- **12:00 — switched off**, because production had stopped covering the
+  house. From there the orange trace sits below the yellow for the rest
+  of the useful day.
+
+Between those marks, through the broken cloud either side of 11:00,
+consumption tracks production rather than lagging it in steps. The
+five-minute smoothing window and the 300 W deadband are doing what they
+were sized for: following the shape of the day without rewriting the
+charger's limit on every passing cloud.
+
+What the chart cannot show is the charger's own draw, because the orange
+trace is the whole house. For the charger figure read
+`sensor.<device>_instant_power`, and for what the controller believed at
+the time, the select's attributes below.
+
+---
+
 ## The settings in use
 
 | Setting | Value | Note |
@@ -223,11 +261,15 @@ grid.
 
 Honest gaps, so nobody reads this as more complete than it is:
 
-- A full-day timeline of PV, surplus, charger limit and car draw, with
-  the chart behind it.
-- Behaviour across broken cloud — whether the limit hunts, how often
-  commands are actually sent, and whether the shortened stop delay
-  causes visible stop-start.
+- The charger's own draw and the limit the controller set, across the
+  day above. The chart shows whole-house consumption, so the car's
+  share of it is inferred rather than measured.
+- The select's `surplus_w`, `last_action` and `last_reason` at points
+  through that day — what the controller believed, against what the
+  house actually did.
+- How often commands were sent. The traces are consistent with the
+  deadband suppressing most of them, but that is a reading of a chart
+  rather than a count.
 - Whether the 1,500 W floor cuts charging awkwardly in the first and
   last hour of useful sun.
 - Whether solar control has ever refused to arm when it should not
