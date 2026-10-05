@@ -242,8 +242,16 @@ def test_only_one_config_entry_is_allowed() -> None:
     manifest so Home Assistant refuses the second entry in the UI
     rather than leaving it to the flow.
 
-    Asserted with the abort strings, because the flag alone aborts with
-    an untranslated reason the user cannot act on.
+    The manifest flag is the whole of it. An earlier version of this
+    test also asserted a ``single_instance_allowed`` string in each
+    locale file, on the assumption that the flag would otherwise abort
+    with an untranslated reason. It does not: Home Assistant raises
+    that abort itself, from two sites in ``config_entries.py``, both
+    passing ``translation_domain=HOMEASSISTANT_DOMAIN``. The frontend
+    resolves ``component.homeassistant.config.abort.single_instance_
+    allowed`` and never looks at this integration's copy, so the
+    strings were dead and the assertion gave false assurance that an
+    explanation reached the user.
     """
     import json
 
@@ -254,12 +262,10 @@ def test_only_one_config_entry_is_allowed() -> None:
 
     for filename in _translation_files():
         data = json.loads((PACKAGE_DIR / filename).read_text())
-        aborts = data["config"]["abort"]
-        assert "single_instance_allowed" in aborts, (
-            f"{filename} has no reason for the refused second entry"
-        )
-        assert aborts["single_instance_allowed"].strip(), (
-            f"{filename}: the reason is empty"
+        assert "single_instance_allowed" not in data["config"]["abort"], (
+            f"{filename} defines single_instance_allowed, which Home "
+            "Assistant resolves from its own domain — the string is "
+            "dead and will never be shown"
         )
 
 
