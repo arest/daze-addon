@@ -66,7 +66,7 @@ SCHEDULE_FIELDS = (
 )
 
 
-def _load_api() -> tuple[Any, Any]:
+def _load_api() -> tuple[Any, Any, Any]:
     """Load the API client without executing the integration's __init__.
 
     ``import custom_components.daze.api`` runs

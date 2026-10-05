@@ -350,6 +350,11 @@ class FakeServiceCoordinator:
         self.solar_controller: Any = None
         self.refresh_calls = 0
         self.settle_calls = 0
+        self.shutdown_called = False
+
+    def async_shutdown_timers(self) -> None:
+        """Record that the coordinator's own timers were cancelled."""
+        self.shutdown_called = True
 
     async def async_request_refresh(self) -> None:
         self.refresh_calls += 1
@@ -781,7 +786,9 @@ def test_a_failed_setup_leaves_no_solar_timer_or_listener_running() -> None:
         daze_init.async_setup_coordinator = original_setup_coordinator
         daze_init.dr.async_get = original_async_get
 
-    controller = hass.data[DOMAIN][entry.entry_id]["solar_controller"]
+    entry_data = hass.data[DOMAIN][entry.entry_id]
+    coordinator_handle = entry_data["coordinator"]
+    controller = entry_data["solar_controller"]
     assert controller._cancel_tick is not None, (
         "the fixture never armed a timer, so this proves nothing"
     )
@@ -798,6 +805,13 @@ def test_a_failed_setup_leaves_no_solar_timer_or_listener_running() -> None:
     assert controller._cancel_tick is None, "the solar timer kept ticking"
     assert controller._cancel_listener is None, (
         "the grid sensor listener was left attached"
+    )
+    assert coordinator_handle.shutdown_called is True, (
+        "the coordinator's poll timer and pending retries were left "
+        "armed against an entry that failed to set up"
+    )
+    assert entry.entry_id not in hass.data.get(DOMAIN, {}), (
+        "hass.data kept a dict pointing at the dead coordinator"
     )
 
 

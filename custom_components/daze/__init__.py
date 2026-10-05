@@ -105,6 +105,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # nothing will ever refresh.
     entry.async_on_unload(solar_controller.async_stop)
 
+    # The coordinator's own timers have the same problem and were left
+    # behind when the controller's were fixed. Its poll timer is armed
+    # by the first refresh, and async_shutdown_timers also cancels any
+    # pending command retries; both live only in async_unload_entry,
+    # which a failed setup never reaches. A platform raising after
+    # entities have subscribed leaves the coordinator polling against
+    # an entry in SETUP_ERROR.
+    entry.async_on_unload(coordinator.async_shutdown_timers)
+
     # Store coordinator and API client in hass.data for entity platforms
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
@@ -115,6 +124,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "solar_controller": solar_controller,
         "reload_signature": _reload_signature(entry),
     }
+    # Same reasoning: async_unload_entry pops this, and a failed setup
+    # never calls it, so the entry would keep a dict pointing at a dead
+    # coordinator until Home Assistant's retry overwrote it.
+    entry.async_on_unload(
+        lambda: hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+    )
 
     # Forward setup to entity platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
