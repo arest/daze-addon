@@ -307,6 +307,107 @@ def test_smoother_survives_a_clock_that_goes_backwards() -> None:
     # average would be (1000 + 2000 + 9999 + 3000) / 4 = 4000.25.
     assert smoother.value() == 2000
 
+# ------------------------------------------------------------------
+# The two stop timers are read from the state, not from the module
+# ------------------------------------------------------------------
+
+
+def test_a_shorter_stop_delay_stops_sooner() -> None:
+    """decide() must consult state.stop_delay_s, not the constant.
+
+    Left reading the module global, a user who sets 180s keeps
+    waiting the built-in 600s and nothing anywhere says so.
+    """
+    below = state(
+        charging=True,
+        surplus_w=0,
+        seconds_since_start=10_000,
+        seconds_below_threshold=200,
+        stop_delay_s=180,
+    )
+
+    assert solar.decide(below).action is solar.SolarAction.STOP
+
+
+def test_a_longer_stop_delay_keeps_charging() -> None:
+    """The other direction: 200s below a 600s delay must not stop."""
+    below = state(
+        charging=True,
+        surplus_w=0,
+        seconds_since_start=10_000,
+        seconds_below_threshold=200,
+        stop_delay_s=600,
+    )
+
+    decision = solar.decide(below)
+    assert decision.action is solar.SolarAction.NOTHING
+    assert "400s before stopping" in decision.reason, (
+        f"countdown computed from the wrong delay: {decision.reason!r}"
+    )
+
+
+def test_the_countdown_counts_down_from_the_configured_delay() -> None:
+    """The reason string is the only place a user sees this number."""
+    decision = solar.decide(
+        state(
+            charging=True,
+            surplus_w=0,
+            seconds_since_start=10_000,
+            seconds_below_threshold=60,
+            stop_delay_s=300,
+        )
+    )
+
+    assert "240s before stopping" in decision.reason, decision.reason
+
+
+def test_a_longer_minimum_run_blocks_a_stop_the_delay_would_allow() -> None:
+    """min_run_s gates first, so it is the floor on time-to-stop.
+
+    Surplus has been gone for longer than the stop delay, and the
+    charge still may not be stopped because it is younger than the
+    minimum run. This ordering is why lowering the stop delay alone
+    does nothing for a freshly started charge.
+    """
+    decision = solar.decide(
+        state(
+            charging=True,
+            surplus_w=0,
+            seconds_since_start=300,
+            seconds_below_threshold=10_000,
+            stop_delay_s=120,
+            min_run_s=1800,
+        )
+    )
+
+    assert decision.action is solar.SolarAction.NOTHING
+    assert "minimum run time" in decision.reason, decision.reason
+
+
+def test_a_shorter_minimum_run_releases_that_block() -> None:
+    """The same charge, with the minimum run lowered, stops."""
+    decision = solar.decide(
+        state(
+            charging=True,
+            surplus_w=0,
+            seconds_since_start=300,
+            seconds_below_threshold=10_000,
+            stop_delay_s=120,
+            min_run_s=120,
+        )
+    )
+
+    assert decision.action is solar.SolarAction.STOP
+
+
+def test_both_timers_default_to_the_former_constants() -> None:
+    """A SolarState built without them behaves as it always did."""
+    built = state(charging=True)
+
+    assert built.stop_delay_s == solar.STOP_DELAY_SECONDS
+    assert built.min_run_s == solar.MIN_RUN_SECONDS
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [

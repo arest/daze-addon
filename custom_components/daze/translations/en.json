@@ -126,6 +126,12 @@
       },
       "solar_reserve": {
         "name": "Solar reserve"
+      },
+      "solar_stop_delay": {
+        "name": "Solar stop delay"
+      },
+      "solar_min_run": {
+        "name": "Solar minimum run time"
       }
     },
     "select": {

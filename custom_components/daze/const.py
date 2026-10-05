@@ -67,6 +67,30 @@ CONF_SOLAR_RESERVE = "solar_reserve"
 DEFAULT_SOLAR_RESERVE = 0
 MAX_SOLAR_RESERVE = 5000
 
+# The two timers that decide how long a charge survives a loss of
+# surplus. Both were module constants in solar.py and are now entities,
+# because the right value depends on the site: a household that charges
+# in long settled blocks wants them long, one chasing broken sun wants
+# them short, and no default serves both.
+#
+# They gate the stop in series, not in parallel, and the minimum run
+# time is checked first (see decide()). A charge younger than the
+# minimum run time is never stopped however long the surplus has been
+# gone, so lowering the stop delay alone changes nothing for a charge
+# that has just begun. Anyone wanting a faster stop has to lower both.
+#
+# The 120 s lower bound is the evaluation cadence, not a safety margin.
+# The controller only re-decides every TICK_SECONDS, so a delay shorter
+# than one tick cannot be observed and the entity would be claiming a
+# precision it does not have.
+CONF_SOLAR_STOP_DELAY = "solar_stop_delay"
+CONF_SOLAR_MIN_RUN = "solar_min_run"
+DEFAULT_SOLAR_STOP_DELAY = 600
+DEFAULT_SOLAR_MIN_RUN = 600
+MIN_SOLAR_TIMER = 120
+MAX_SOLAR_TIMER = 1800
+SOLAR_TIMER_STEP = 30
+
 # How long an optimistic switch state is trusted before the charger's
 # own reading takes over again. Observed transitions completed in 9 to
 # 12 seconds, so this both covers them and bounds how long the UI can

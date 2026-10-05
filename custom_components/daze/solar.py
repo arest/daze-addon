@@ -84,6 +84,14 @@ class SolarState:
     commands_this_hour: int
     backoff_remaining_s: float
 
+    # The two stop timers, carried on the state rather than read from
+    # the module so the user can change them. Defaulted to the former
+    # constants: every construction that predates them keeps the
+    # behaviour it was written against, and a test that does not care
+    # about timing does not have to mention them.
+    stop_delay_s: float = STOP_DELAY_SECONDS
+    min_run_s: float = MIN_RUN_SECONDS
+
 
 @dataclass(frozen=True, kw_only=True)
 class SolarDecision:
@@ -208,14 +216,14 @@ def decide(state: SolarState) -> SolarDecision:
 
     if state.charging:
         if available < state.floor_w:
-            if state.seconds_since_start < MIN_RUN_SECONDS:
+            if state.seconds_since_start < state.min_run_s:
                 return _nothing(
                     f"surplus {available:.0f} W is below the "
                     f"{state.floor_w} W floor, but the minimum run time "
                     "has not elapsed"
                 )
 
-            if state.seconds_below_threshold >= STOP_DELAY_SECONDS:
+            if state.seconds_below_threshold >= state.stop_delay_s:
                 return SolarDecision(
                     action=SolarAction.STOP,
                     target_watts=None,
@@ -228,7 +236,7 @@ def decide(state: SolarState) -> SolarDecision:
 
             return _nothing(
                 f"surplus {available:.0f} W is below the floor, waiting "
-                f"{STOP_DELAY_SECONDS - int(state.seconds_below_threshold)}s "
+                f"{int(state.stop_delay_s) - int(state.seconds_below_threshold)}s "
                 "before stopping"
             )
 

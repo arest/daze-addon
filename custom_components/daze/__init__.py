@@ -19,9 +19,13 @@ from .const import (
     CONF_NETWORK_UID,
     CONF_SERIAL_NUMBER,
     CONF_SOFTWARE_VERSION,
+    CONF_SOLAR_MIN_RUN,
     CONF_SOLAR_RESERVE,
+    CONF_SOLAR_STOP_DELAY,
     CONF_SUPPLY_PHASES,
+    DEFAULT_SOLAR_MIN_RUN,
     DEFAULT_SOLAR_RESERVE,
+    DEFAULT_SOLAR_STOP_DELAY,
     DOMAIN,
     PLATFORMS,
     SERVICE_SET_CHARGING_CURRENT,
@@ -81,6 +85,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_SOLAR_RESERVE, DEFAULT_SOLAR_RESERVE
         ),
         supply_phases=entry.options.get(CONF_SUPPLY_PHASES),
+        stop_delay_s=entry.options.get(
+            CONF_SOLAR_STOP_DELAY, DEFAULT_SOLAR_STOP_DELAY
+        ),
+        min_run_s=entry.options.get(
+            CONF_SOLAR_MIN_RUN, DEFAULT_SOLAR_MIN_RUN
+        ),
     )
     # The entities reach the controller through the coordinator, which
     # every one of them already holds.
@@ -175,15 +185,25 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 def _reload_signature(entry: ConfigEntry) -> tuple[Any, Any]:
     """Return the parts of an entry whose change needs a reload.
 
-    The solar reserve is deliberately absent. It is applied live by the
-    controller, so rewriting it is not a reason to rebuild the entry;
-    everything else — credentials, the poll interval, the signed grid-power
-    sensor and supply phases the controller is constructed with — is.
+    The three solar settings that have their own entities are
+    deliberately absent: the reserve, the stop delay and the minimum
+    run time. Each is applied live by the controller, so rewriting one
+    is not a reason to rebuild the entry — and because every one of
+    those entities writes to the options on each step of its slider,
+    treating them as reload triggers would tear the integration down
+    and back up repeatedly while the user drags. Everything else —
+    credentials, the poll interval, the signed grid-power sensor and
+    supply phases the controller is constructed with — is.
     """
+    live_applied = (
+        CONF_SOLAR_RESERVE,
+        CONF_SOLAR_STOP_DELAY,
+        CONF_SOLAR_MIN_RUN,
+    )
     options = {
         key: value
         for key, value in entry.options.items()
-        if key != CONF_SOLAR_RESERVE
+        if key not in live_applied
     }
     return (dict(entry.data), options)
 

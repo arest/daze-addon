@@ -371,6 +371,61 @@ def test_every_translation_key_resolves_in_every_locale() -> None:
         )
 
 
+import ast
+
+
+def _class_declares(node: ast.ClassDef, attribute: str) -> bool:
+    """Whether this class body assigns the attribute."""
+    for statement in node.body:
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+        else:
+            continue
+        if any(
+            isinstance(t, ast.Name) and t.id == attribute for t in targets
+        ):
+            return True
+    return False
+
+
+def _resolves(
+    classes: dict[str, ast.ClassDef],
+    name: str,
+    attribute: str,
+    seen: set[str] | None = None,
+) -> bool:
+    """Whether the class or any in-module base assigns the attribute."""
+    seen = seen if seen is not None else set()
+    if name in seen or name not in classes:
+        return False
+    seen.add(name)
+    node = classes[name]
+    if _class_declares(node, attribute):
+        return True
+    return any(
+        isinstance(base, ast.Name)
+        and _resolves(classes, base.id, attribute, seen)
+        for base in node.bases
+    )
+
+
+def _declared_key(node: ast.ClassDef) -> str | None:
+    """The translation key literal this class itself assigns."""
+    for statement in node.body:
+        if not isinstance(statement, ast.Assign):
+            continue
+        for target in statement.targets:
+            if (
+                isinstance(target, ast.Name)
+                and target.id == "_attr_translation_key"
+                and isinstance(statement.value, ast.Constant)
+            ):
+                return str(statement.value.value)
+    return None
+
+
 def test_every_entity_class_declares_a_translation_key() -> None:
     """has_entity_name without a name or key falls back to device_class.
 
@@ -384,15 +439,62 @@ def test_every_entity_class_declares_a_translation_key() -> None:
     The sensor platform is exempt by construction: its single entity
     class takes the key from the catalog through the description rather
     than from a class attribute.
-    """
-    import re
 
+    Resolved through the class hierarchy rather than counted. This was
+    two regex counts compared for equality, which reads the file as a
+    bag of lines: a shared base declaring has_entity_name once for two
+    subclasses that each declare their own key gives 1 against 2 and
+    fails, though every entity is correctly named. Counting also
+    passes on the inverse — one class with a key and another with
+    none — whenever the totals happen to match.
+
+    What actually matters is per-class and inherited: a class that is
+    instantiated must resolve a translation key somewhere in its own
+    bases. Abstract bases are exempt, because nothing instantiates
+    them; a class that is nobody's base is not.
+    """
     for filename in ("switch.py", "number.py", "select.py"):
-        text = (PACKAGE_DIR / filename).read_text()
-        named = len(re.findall(r"_attr_has_entity_name = True", text))
-        keyed = len(re.findall(r'_attr_translation_key = "', text))
-        assert keyed == named, (
-            f"{filename}: {named} entity classes, {keyed} translation keys"
+        tree = ast.parse((PACKAGE_DIR / filename).read_text())
+        classes = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef)
+        }
+        in_module_bases = {
+            base.id
+            for node in classes.values()
+            for base in node.bases
+            if isinstance(base, ast.Name)
+        }
+
+        concrete = []
+        for name in classes:
+            if name in in_module_bases:
+                continue  # abstract: nothing instantiates it
+            if not _resolves(classes, name, "_attr_has_entity_name"):
+                continue  # not an entity class
+            assert _resolves(classes, name, "_attr_translation_key"), (
+                f"{filename}: {name} sets has_entity_name but resolves no "
+                "translation key, so it falls back to its device_class "
+                "default instead of a written name"
+            )
+            concrete.append(name)
+
+        # Each concrete entity needs its own key, not merely some key.
+        # Sharing became possible when these classes gained a common
+        # base: a key set on the base resolves for every subclass, so
+        # each one satisfies the assertion above while the device shows
+        # two entities under one name.
+        keys = [k for k in (_declared_key(classes[n]) for n in concrete) if k]
+        duplicates = {k for k in keys if keys.count(k) > 1}
+        assert not duplicates, (
+            f"{filename}: translation key reused by sibling entities, "
+            f"which renders them identically: {sorted(duplicates)}"
+        )
+        unkeyed = [n for n in concrete if _declared_key(classes[n]) is None]
+        assert not unkeyed, (
+            f"{filename}: {unkeyed} inherit a translation key rather than "
+            "declaring one, so they share a name with their sibling"
         )
 
 

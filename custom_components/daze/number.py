@@ -19,6 +19,7 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfElectricCurrent,
     UnitOfPower,
+    UnitOfTime,
 )
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -31,11 +32,16 @@ from .api import (
     ApiError,
 )
 from .const import (
+    CONF_SOLAR_MIN_RUN,
     CONF_SOLAR_RESERVE,
+    CONF_SOLAR_STOP_DELAY,
     DOMAIN,
     INLINE_COMMAND_ATTEMPTS,
     MAX_SOLAR_RESERVE,
+    MAX_SOLAR_TIMER,
+    MIN_SOLAR_TIMER,
     POST_COMMAND_REFRESH_DELAY,
+    SOLAR_TIMER_STEP,
 )
 from .coordinator import DazeDataUpdateCoordinator
 from .payload import (
@@ -608,6 +614,100 @@ class DazeSolarReserveEntity(
         self.async_write_ha_state()
 
 
+class _DazeSolarTimerEntity(
+    CoordinatorEntity[DazeDataUpdateCoordinator], NumberEntity
+):
+    """Shared behaviour of the two solar stop timers.
+
+    Both persist to the config entry's options for the same reason the
+    reserve does: a timer that resets on every restart is a setting
+    that quietly stops being the user's. _reload_signature excludes
+    both keys, so writing one does not reload the entry while the
+    slider is being dragged.
+
+    Subclasses supply the option key and the controller attribute they
+    drive; everything else is identical between them.
+    """
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = MIN_SOLAR_TIMER
+    _attr_native_max_value = MAX_SOLAR_TIMER
+    _attr_native_step = SOLAR_TIMER_STEP
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+
+    _option_key: str
+    _controller_attribute: str
+
+    def __init__(
+        self,
+        coordinator: DazeDataUpdateCoordinator,
+        controller: Any,
+        entry: ConfigEntry,
+        serial_number: str,
+        device_info: DeviceInfo,
+    ) -> None:
+        """Initialise a solar timer control.
+
+        Args:
+            coordinator: The Daze data coordinator.
+            controller: The solar controller whose timer this is.
+            entry: The config entry the value is persisted in.
+            serial_number: The wallbox serial number.
+            device_info: Device info for the device registry.
+
+        """
+        super().__init__(coordinator)
+        self._controller = controller
+        self._entry = entry
+        self._serial_number = serial_number
+        self._attr_unique_id = f"{serial_number}_{self._option_key}"
+        self._attr_device_info = device_info
+
+    @property
+    def native_value(self) -> float:
+        """Return the configured timer, in seconds."""
+        return float(getattr(self._controller, self._controller_attribute))
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Apply the timer live, and remember it across a restart."""
+        setattr(self._controller, self._controller_attribute, value)
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            options={**self._entry.options, self._option_key: int(value)},
+        )
+        self.async_write_ha_state()
+
+
+class DazeSolarStopDelayEntity(_DazeSolarTimerEntity):
+    """How long surplus stays below the floor before the charge stops.
+
+    Longer rides out passing cloud at the cost of importing from the
+    grid meanwhile; shorter stops sooner at the cost of interrupting a
+    car that would have carried on. Effective resolution is 120 s,
+    because the controller only re-decides once per tick.
+    """
+
+    _attr_translation_key = "solar_stop_delay"
+    _option_key = CONF_SOLAR_STOP_DELAY
+    _controller_attribute = "stop_delay_s"
+
+
+class DazeSolarMinRunEntity(_DazeSolarTimerEntity):
+    """How long a charge runs before solar control may stop it at all.
+
+    Checked before the stop delay, so this is the floor on how quickly
+    a charge can end: a charge younger than this is never stopped
+    however long the surplus has been gone. Lowering the stop delay
+    alone will not make a freshly started charge stop sooner.
+    Effective resolution is 120 s, as above.
+    """
+
+    _attr_translation_key = "solar_min_run"
+    _option_key = CONF_SOLAR_MIN_RUN
+    _controller_attribute = "min_run_s"
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -652,6 +752,16 @@ async def async_setup_entry(
                 serial_number=serial_number,
                 device_info=device_info,
             )
+        )
+        entities.extend(
+            timer(
+                coordinator=coordinator,
+                controller=solar_controller,
+                entry=entry,
+                serial_number=serial_number,
+                device_info=device_info,
+            )
+            for timer in (DazeSolarStopDelayEntity, DazeSolarMinRunEntity)
         )
 
     async_add_entities(entities)

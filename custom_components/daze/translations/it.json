@@ -132,6 +132,12 @@
       },
       "solar_reserve": {
         "name": "Riserva solare"
+      },
+      "solar_stop_delay": {
+        "name": "Ritardo di arresto solare"
+      },
+      "solar_min_run": {
+        "name": "Tempo minimo di carica solare"
       }
     },
     "select": {

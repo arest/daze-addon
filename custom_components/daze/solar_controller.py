@@ -32,7 +32,12 @@ from .api import (
     ApiCommandRejectedError,
     ApiError,
 )
-from .const import SUPPLY_PHASES_SINGLE, SUPPLY_PHASES_THREE
+from .const import (
+    DEFAULT_SOLAR_MIN_RUN,
+    DEFAULT_SOLAR_STOP_DELAY,
+    SUPPLY_PHASES_SINGLE,
+    SUPPLY_PHASES_THREE,
+)
 from .payload import (
     charger_offline_reason,
     is_charge_enabled,
@@ -46,7 +51,6 @@ from .solar import (
     IGNORED_START_BACKOFF_SECONDS,
     MAX_COMMANDS_PER_HOUR,
     MIN_MEANINGFUL_DRAW_W,
-    MIN_RUN_SECONDS,
     TICK_SECONDS,
     SolarAction,
     SolarDecision,
@@ -110,6 +114,8 @@ class SolarController:
         grid_power_entity: str | None,
         reserve_w: float = 0.0,
         supply_phases: str | None = None,
+        stop_delay_s: float = DEFAULT_SOLAR_STOP_DELAY,
+        min_run_s: float = DEFAULT_SOLAR_MIN_RUN,
     ) -> None:
         """Initialise in the off state.
 
@@ -140,6 +146,8 @@ class SolarController:
 
         self._mode = SolarMode.OFF
         self._reserve_w = max(0.0, float(reserve_w))
+        self._stop_delay_s = float(stop_delay_s)
+        self._min_run_s = float(min_run_s)
         self._smoother = SurplusSmoother()
         self._last_decision: SolarDecision | None = None
         self._listeners: list[Callable[[], None]] = []
@@ -276,6 +284,28 @@ class SolarController:
     def reserve_w(self, value: float) -> None:
         """Set the reserve."""
         self._reserve_w = max(0.0, float(value))
+        self._notify()
+
+    @property
+    def stop_delay_s(self) -> float:
+        """Seconds below the floor before the charge is stopped."""
+        return self._stop_delay_s
+
+    @stop_delay_s.setter
+    def stop_delay_s(self, value: float) -> None:
+        """Set the stop delay, applied on the next evaluation."""
+        self._stop_delay_s = float(value)
+        self._notify()
+
+    @property
+    def min_run_s(self) -> float:
+        """Seconds a charge runs before it may be stopped at all."""
+        return self._min_run_s
+
+    @min_run_s.setter
+    def min_run_s(self, value: float) -> None:
+        """Set the minimum run time, applied on the next evaluation."""
+        self._min_run_s = float(value)
         self._notify()
 
     @property
@@ -541,7 +571,12 @@ class SolarController:
         elif not self._charge_seeded:
             self._charge_seeded = True
             if self._started_at is None:
-                self._started_at = now - MIN_RUN_SECONDS
+                # Seeded against the configured minimum, not the
+                # module default: seeding a charge as older than a
+                # 600 s default while the user has set 1800 s would
+                # let it be stopped 1200 s before their setting says
+                # it may be.
+                self._started_at = now - self._min_run_s
 
         # A start only simulated never reached the charger, so the
         # car was never given the chance to draw. Checking anyway
@@ -796,6 +831,8 @@ class SolarController:
             ),
             commands_this_hour=self._commands_this_hour(now),
             backoff_remaining_s=max(0.0, self._backoff_until - now),
+            stop_delay_s=self._stop_delay_s,
+            min_run_s=self._min_run_s,
         )
 
     @staticmethod

@@ -460,6 +460,72 @@ def test_async_setup_entry_seeds_the_controllers_reserve_from_options() -> (
     )
 
 
+def test_async_setup_entry_seeds_both_solar_timers_from_options() -> None:
+    """The read half of the restart guarantee for the two stop timers.
+
+    Same shape as the reserve above and the same failure if dropped:
+    the constructor defaults both to 600 s on its own, so removing
+    either keyword from the SolarController(...) call passes every
+    test that does not look here, and the user's setting silently
+    reverts to the default on every restart.
+    """
+    entry = FakeEntry(
+        data={
+            const.CONF_SERIAL_NUMBER: "SER1",
+            const.CONF_NETWORK_UID: "NET1",
+        },
+        options={
+            const.CONF_SOLAR_STOP_DELAY: 300,
+            const.CONF_SOLAR_MIN_RUN: 1200,
+        },
+    )
+    hass = FakeHass()
+
+    original_setup_coordinator = daze_init.async_setup_coordinator
+    original_async_get = daze_init.dr.async_get
+    daze_init.async_setup_coordinator = _fake_async_setup_coordinator
+    daze_init.dr.async_get = lambda _hass: FakeDeviceRegistry()
+    try:
+        asyncio.run(daze_init.async_setup_entry(hass, entry))
+    finally:
+        daze_init.async_setup_coordinator = original_setup_coordinator
+        daze_init.dr.async_get = original_async_get
+
+    controller = hass.data[DOMAIN][entry.entry_id]["solar_controller"]
+    assert controller.stop_delay_s == 300, (
+        "the persisted stop delay never reached the controller"
+    )
+    assert controller.min_run_s == 1200, (
+        "the persisted minimum run time never reached the controller"
+    )
+
+
+def test_absent_solar_timer_options_fall_back_to_the_defaults() -> None:
+    """A config entry written before these existed must still work."""
+    entry = FakeEntry(
+        data={
+            const.CONF_SERIAL_NUMBER: "SER1",
+            const.CONF_NETWORK_UID: "NET1",
+        },
+        options={},
+    )
+    hass = FakeHass()
+
+    original_setup_coordinator = daze_init.async_setup_coordinator
+    original_async_get = daze_init.dr.async_get
+    daze_init.async_setup_coordinator = _fake_async_setup_coordinator
+    daze_init.dr.async_get = lambda _hass: FakeDeviceRegistry()
+    try:
+        asyncio.run(daze_init.async_setup_entry(hass, entry))
+    finally:
+        daze_init.async_setup_coordinator = original_setup_coordinator
+        daze_init.dr.async_get = original_async_get
+
+    controller = hass.data[DOMAIN][entry.entry_id]["solar_controller"]
+    assert controller.stop_delay_s == const.DEFAULT_SOLAR_STOP_DELAY
+    assert controller.min_run_s == const.DEFAULT_SOLAR_MIN_RUN
+
+
 # ------------------------------------------------------------------
 # _reload_signature
 # ------------------------------------------------------------------
@@ -485,6 +551,66 @@ def test_reload_signature_ignores_only_the_solar_reserve() -> None:
     entry.options["poll_interval"] = 60
     assert daze_init._reload_signature(entry) != before, (
         "a real option change must still alter the reload signature"
+    )
+
+
+def test_neither_solar_timer_alters_the_reload_signature() -> None:
+    """Both are applied live, so neither may force a rebuild.
+
+    Each has its own slider, and each slider writes to the options on
+    every step. Treated as reload triggers they would tear the
+    integration down and back up repeatedly while the user drags,
+    which is the failure the reserve's exclusion was written to avoid
+    and which returns in triplicate if either key is left out.
+    """
+    entry = FakeEntry(
+        data={"access_token": "a"},
+        options={
+            CONF_SOLAR_RESERVE: 500,
+            const.CONF_SOLAR_STOP_DELAY: 600,
+            const.CONF_SOLAR_MIN_RUN: 600,
+            "poll_interval": 30,
+        },
+    )
+
+    before = daze_init._reload_signature(entry)
+
+    entry.options[const.CONF_SOLAR_STOP_DELAY] = 180
+    assert daze_init._reload_signature(entry) == before, (
+        "a stop-delay change altered the reload signature"
+    )
+
+    entry.options[const.CONF_SOLAR_MIN_RUN] = 1800
+    assert daze_init._reload_signature(entry) == before, (
+        "a minimum-run change altered the reload signature"
+    )
+
+    entry.options["poll_interval"] = 60
+    assert daze_init._reload_signature(entry) != before, (
+        "a real option change must still alter the reload signature"
+    )
+
+
+def test_a_solar_timer_change_does_not_reload_the_entry() -> None:
+    """The behaviour the exclusion exists to produce, through the
+    listener rather than the pure function it is built from.
+    """
+    entry = FakeEntry(
+        data={"access_token": "a"},
+        options={const.CONF_SOLAR_STOP_DELAY: 600, "poll_interval": 30},
+    )
+    hass = FakeHass()
+    hass.data[DOMAIN] = {
+        entry.entry_id: {
+            "reload_signature": daze_init._reload_signature(entry),
+        }
+    }
+
+    entry.options[const.CONF_SOLAR_STOP_DELAY] = 300
+    asyncio.run(daze_init._async_update_listener(hass, entry))
+
+    assert hass.config_entries.reload_calls == [], (
+        "changing the stop delay reloaded the integration"
     )
 
 

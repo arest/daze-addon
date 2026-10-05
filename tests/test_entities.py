@@ -146,6 +146,7 @@ def install_homeassistant_stubs() -> list[tuple[Any, Any, Any]]:
             "UnitOfElectricCurrent", (), {"MILLIAMPERE": "mA"}
         ),
         UnitOfPower=type("UnitOfPower", (), {"WATT": "W"}),
+        UnitOfTime=type("UnitOfTime", (), {"SECONDS": "s"}),
     )
     _module(
         "homeassistant.core",
