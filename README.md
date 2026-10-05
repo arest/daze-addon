@@ -214,6 +214,13 @@ zero W — that is expected.
 
 **Battery homes — virtual signed-grid template:**
 
+> A worked example of this, measured on a running installation with
+> the arithmetic checked against real readings, is in
+> [docs/solar-control-in-practice.md](docs/solar-control-in-practice.md).
+> It also covers how to confirm your house-load figure includes the
+> charger, which decides whether this template is correct or a
+> feedback loop.
+
 If your house has a battery, the physical grid meter may sit at or
 near zero even when solar surplus exists, because the battery
 absorbs it. Use a template that subtracts PV from house load so
