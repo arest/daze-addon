@@ -241,6 +241,135 @@ def test_a_payload_bearing_token_is_not_a_header() -> None:
     )
 
 
+# ------------------------------------------------------------------
+# Images carry metadata the identifier patterns were never meant to see
+# ------------------------------------------------------------------
+
+# Chunks a PNG needs in order to be a PNG. Everything else is metadata
+# of some kind, and none of it belongs in this repository.
+#
+# Deliberately an allowlist. A denylist would have to name caBX, and
+# nobody knew caBX existed until one arrived — which is the whole
+# lesson. Anything not on this list fails, including chunk types
+# invented after this was written.
+_PNG_PIXEL_CHUNKS = frozenset(
+    {
+        "IHDR",  # dimensions, bit depth, colour type
+        "PLTE",  # palette, for indexed-colour images
+        "IDAT",  # the pixels
+        "IEND",  # terminator
+        "tRNS",  # transparency
+        "gAMA",  # gamma
+        "sRGB",  # colour space
+        "cHRM",  # chromaticity
+        "pHYs",  # pixel dimensions
+        "sBIT",  # significant bits
+        "bKGD",  # background colour for transparent images
+    }
+)
+
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+
+
+def _png_chunks(raw: bytes) -> list[tuple[str, int]]:
+    """Return (type, length) for every chunk in a PNG."""
+    chunks: list[tuple[str, int]] = []
+    position = 8  # past the signature
+    while position + 8 <= len(raw):
+        length = int.from_bytes(raw[position : position + 4], "big")
+        kind = raw[position + 4 : position + 8].decode("latin1", "replace")
+        chunks.append((kind, length))
+        position += 12 + length
+        if kind == "IEND":
+            break
+    return chunks
+
+
+def test_no_tracked_image_carries_embedded_metadata() -> None:
+    """An image is pixels. Anything else in the file is a passenger.
+
+    On 2026-10-05 a chart added to docs/ arrived carrying a
+    23,654-byte caBX chunk — a C2PA Content Credentials provenance
+    manifest, holding URLs, timestamps, GUIDs, cryptographic
+    signatures and four strings containing an @.
+
+    It was looked for and missed. The inspection checked tEXt, iTXt,
+    zTXt and eXIf — the chunks a person thinks of — and reported the
+    file clean. What caught it was
+    test_no_tracked_file_carries_a_device_identifier, which does not
+    know what a PNG is and simply scanned the bytes, failing on a GUID
+    at offset 121.
+
+    That catch was luck. The identifier patterns cover serials, GUIDs,
+    MACs and JWTs; a provenance manifest carrying only URLs, an email
+    address and timestamps matches none of them and would have gone
+    through. This test does not depend on what the metadata happens to
+    contain.
+    """
+    offenders: list[str] = []
+
+    for path in _tracked_files():
+        if path.suffix.lower() not in _IMAGE_SUFFIXES:
+            continue
+
+        raw = path.read_bytes()
+        name = path.relative_to(ROOT).as_posix()
+
+        if path.suffix.lower() != ".png":
+            offenders.append(
+                f"{name}: only PNG is understood by this check — add a "
+                "reader for this format rather than leaving it unchecked"
+            )
+            continue
+
+        for kind, length in _png_chunks(raw):
+            if kind not in _PNG_PIXEL_CHUNKS:
+                offenders.append(f"{name}: {kind} chunk, {length} bytes")
+
+    assert not offenders, (
+        "tracked images carry embedded metadata:\n  "
+        + "\n  ".join(offenders)
+        + "\n\nStrip it. Rebuilding the file from its IHDR, IDAT and "
+        "IEND chunks keeps the pixels and discards everything else."
+    )
+
+
+def test_the_png_chunk_reader_sees_what_is_there() -> None:
+    """Control for the test above, which passes trivially if the reader
+    returns nothing. Builds a minimal PNG, confirms the reader finds
+    its chunks, then adds an ancillary chunk and confirms it is seen
+    and rejected.
+    """
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        body = kind + payload
+        return (
+            struct.pack(">I", len(payload))
+            + body
+            + struct.pack(">I", zlib.crc32(body))
+        )
+
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    pixels = zlib.compress(b"\x00\xff\xff\xff")
+    clean = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", pixels)
+        + chunk(b"IEND", b"")
+    )
+
+    kinds = [k for k, _ in _png_chunks(clean)]
+    assert kinds == ["IHDR", "IDAT", "IEND"], kinds
+    assert all(k in _PNG_PIXEL_CHUNKS for k in kinds)
+
+    tainted = clean[:-12] + chunk(b"caBX", b"x" * 64) + clean[-12:]
+    tainted_kinds = [k for k, _ in _png_chunks(tainted)]
+    assert "caBX" in tainted_kinds, tainted_kinds
+    assert "caBX" not in _PNG_PIXEL_CHUNKS
+
+
 def _main() -> int:
     """Run every test in this module and report results."""
     tests = [
