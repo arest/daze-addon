@@ -499,6 +499,42 @@ def test_a_live_cumulative_reading_wins_over_the_stored_one() -> None:
     )
 
 
+def test_the_fallback_follows_the_live_reading() -> None:
+    """Restore, then a live value, then an absent one.
+
+    The missing third step. _restored_value was written once, in
+    async_added_to_hass, so the "last known value" the fallback
+    returned was the value at the last Home Assistant restart — which
+    is a different claim, and a lower number than the one the sensor
+    had just been reporting.
+
+    delivered_energy is where it bites, because it is the only key in
+    RESTORE_STATE_KEYS whose reading oscillates: it comes from
+    deliveredEnergyAsWattHour inside chargeSession, so between sessions
+    the key is absent from the merged payload and this branch fires on
+    every poll. The sequence below is the real one — restart mid-charge
+    at 4000 Wh, the session runs on to 9000 and ends — and it used to
+    report 4000 afterwards. On a total_increasing sensor that step down
+    is recorded as a meter reset and the 9000 is counted twice.
+    """
+    entity = _restore_entity(
+        "delivered_energy", {"deliveredEnergyAsWattHour": 4000.0}, "4000"
+    )
+    _add_to_hass(entity)
+    assert entity.native_value == 4000.0
+
+    # The charge continues past the restored figure.
+    entity.coordinator.data = {"deliveredEnergyAsWattHour": 9000.0}
+    assert entity.native_value == 9000.0
+
+    # The session ends: chargeSession goes away, so the key does too.
+    entity.coordinator.data = {}
+    assert entity.native_value == 9000.0, (
+        "the sensor fell back to the value from the last restart, "
+        "stepping down on a total_increasing series"
+    )
+
+
 def test_a_non_cumulative_sensor_does_not_fall_back() -> None:
     """Only the cumulative counters hold their last value.
 

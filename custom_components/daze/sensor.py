@@ -258,6 +258,23 @@ class DazeWallboxSensorEntity(
             ):
                 return None
 
+            # Keep the fallback current. _restored_value is otherwise
+            # written once, in async_added_to_hass, so "the last known
+            # value" meant "the value at the last Home Assistant
+            # restart" — which is not what the branch above claims and
+            # not what keeps the series monotonic.
+            #
+            # delivered_energy is the key this bites. It reads from
+            # deliveredEnergyAsWattHour, which lives inside
+            # chargeSession, so between sessions the key is absent from
+            # the merged payload and the branch above fires on every
+            # poll. Restart mid-charge at 4000 Wh, let the session run
+            # to 9000 and end, and the sensor reported 4000 — a step
+            # down on a total_increasing sensor, which the statistics
+            # engine reads as a meter reset and double counts.
+            if self.entity_description.key in RESTORE_STATE_KEYS:
+                self._restored_value = value
+
             return value
 
         if self._restored_value is not None:
