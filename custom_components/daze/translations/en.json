@@ -153,7 +153,7 @@
           "supply_phases": "Grid supply"
         },
         "data_description": {
-          "grid_power_sensor": "Positive values mean import from the grid; negative values mean export to the grid.",
+          "grid_power_sensor": "Net grid power in W: positive when importing, negative when exporting. With a home battery, use a template of house load minus PV power — see README.",
           "supply_phases": "How many phases feed the house, not the charger. A three-phase meter reports surplus added up across all three, and a single-phase charger can only use one of them, so solar control will not arm until this is set."
         }
       }

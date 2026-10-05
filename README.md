@@ -182,6 +182,92 @@ charger; nothing reaches hardware until you pick `active` yourself.
    below before switching to `active`.
 4. If the decisions look right, set it to `active`.
 
+### Choosing the grid power sensor
+
+Pick an **instantaneous** net-grid power sensor in **watts (W)**.
+Positive = importing (drawing from grid). Negative = exporting
+(feeding back to grid). The integration will not accept energy totals
+(kWh) or sensors in any unit other than W.
+
+**Correct choices:**
+
+- Your home grid meter / utility meter sensor.
+- If your charger exposes net-grid power as an instantaneous reading
+  in W, that works too.
+
+**Do not use:**
+
+- **PV / solar production alone.** PV output is never negative — it
+  cannot represent export. Grid export happens only when PV exceeds
+  total house draw.
+- **House load alone.** House load is a positive consumption figure;
+  it never goes negative to represent export.
+- **Charger power.** That is the car's draw, not the grid exchange.
+- **kWh totals.** The controller needs instantaneous W to compute
+  surplus per tick.
+
+**Adding charger draw back into the signal:** solar control computes
+surplus as `car_draw - grid_power`, so when the car is charging the
+charger's own draw gets subtracted from the grid power reading.
+During a healthy solar charge the grid meter naturally settles near
+zero W — that is expected.
+
+**Battery homes — virtual signed-grid template:**
+
+If your house has a battery, the physical grid meter may sit at or
+near zero even when solar surplus exists, because the battery
+absorbs it. Use a template that subtracts PV from house load so
+solar control sees what would have hit the grid:
+
+```yaml
+value_template: >
+  {% set pv = states('sensor.<pv_power>') | default(0) %}
+  {% set house = states('sensor.<house_load_power>') | default(0) %}
+  {{ (house | float) - (pv | float) }}
+```
+
+Replace `<pv_power>` and `<house_load_power>` with your actual
+sensor IDs. House load **must include the charger** if you want the
+template to reflect reality while the car is charging. Add an
+`availability` guard so a dropped sensor does not silently appear as
+full PV surplus:
+
+```yaml
+value_template: >
+  {% set pv = states('sensor.<pv_power>') %}
+  {% set house = states('sensor.<house_load_power>') %}
+  {% if pv in ['unknown','unavailable'] or house in ['unknown','unavailable'] %}
+    unavailable
+  {% else %}
+    {{ (house | float) - (pv | float) }}
+  {% endif %}
+```
+
+**Verification before you trust it:**
+
+- Does the value go to zero at night when the car is idle? If it
+  does not, the sign convention is inverted.
+- Does it rise (become more positive) when the car stops charging?
+  Without the template above, the grid meter may stay flat because
+  the battery is absorbing the change.
+- At midday, with PV running and the car idle, does the value turn
+  negative (export)? If it stays positive, the template is inverted
+  or the PV sensor is reading energy rather than power.
+
+**Optional smoothing:** a Statistics sensor with a 3–5 minute
+`state_round` window averages out short spikes and can make the
+surplus calculation more stable. Not required — pick one or the
+other.
+
+**Battery SoC floor:** a battery's minimum state-of-charge (SoC)
+limit is a separate automation in Home Assistant. Solar control does
+not know about SoC floors and should not be relied on to protect
+them.
+
+**The reserve** is watts to leave for the house before the car gets
+any: set it to 500 and the car is only offered surplus above 500 W. It
+is saved with the integration's settings and survives a restart.
+
 It never imports to charge: the charger cannot run below 1500 W, so
 when surplus falls below that it stops rather than topping up from the
 grid.
