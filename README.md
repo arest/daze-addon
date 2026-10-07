@@ -431,6 +431,7 @@ note below on readings the API does not report.
 
 - All data flows through the Daze cloud API — no local/offline control
 - The integration stores only your access token and refresh token, in the Home Assistant config entry. As with every integration, that means plain text in `.storage/core.config_entries` — Home Assistant does not encrypt config entry storage. Treat your configuration directory and your backups as holding live credentials.
+- The stored tokens are the ones you entered at setup, or at your last re-authentication. Refreshing an access token updates it in memory only and never writes it back, so what is on disk does not rotate on its own. Two things follow: an old backup can still hold a usable refresh token, and every restart begins again from the tokens stored at setup — which is why an integration that has been running for weeks can still ask you to re-authenticate after a restart.
 - No data is sent to third parties beyond the Daze API
 
 ---
