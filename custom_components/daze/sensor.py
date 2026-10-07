@@ -348,7 +348,11 @@ async def async_setup_entry(
         identifiers={(DOMAIN, serial_number)},
     )
 
-    entities = [
+    # Annotated, because the solar surplus sensor is appended below and
+    # is a sibling of DazeWallboxSensorEntity rather than a subclass.
+    # Without this the comprehension infers list[DazeWallboxSensorEntity]
+    # and the append is a type error.
+    entities: list[SensorEntity] = [
         DazeWallboxSensorEntity(
             coordinator=coordinator,
             description=description,

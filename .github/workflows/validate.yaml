@@ -14,12 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Install ruff
         run: pip install ruff
@@ -32,17 +32,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          # Home Assistant tracks Python closely: the release installed
+          # here is whichever newest one still supports this version.
+          # When that stops being any release at all, the install below
+          # fails and the job goes red, which is the intended signal to
+          # raise this number rather than something to work around.
+          python-version: "3.13"
 
       - name: Install dependencies
+        # Not `2>/dev/null || true`. homeassistant-stubs depends on
+        # homeassistant, which requires Python >= 3.13.2, so on the 3.12
+        # this workflow used to pin the install failed, the redirect hid
+        # it, and pyright ran with nothing to resolve `homeassistant.*`
+        # against. That produced 59 reportMissingImports errors and a
+        # red job that said nothing about the code. A failure to install
+        # the stubs must fail the job.
         run: |
           pip install pyright
-          pip install homeassistant-stubs 2>/dev/null || true
+          pip install homeassistant-stubs
 
       - name: Run pyright
         run: pyright custom_components/daze/
@@ -52,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Run hassfest
         uses: home-assistant/actions/hassfest@master
@@ -62,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Run HACS validation
         uses: hacs/action@main
