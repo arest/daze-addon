@@ -397,19 +397,40 @@ If your refresh token has expired, the integration will trigger a re-authenticat
 ### Sensors not updating after a control command
 The integration automatically refreshes data after sending a start/stop/current command. If values don't update, wait for the next scheduled poll cycle.
 
+### Some sensors never report a value
+Not every charger populates every field the Daze API defines. On a
+Dazebox C (device profile DB07), a user reported that voltage, the two
+temperatures, lifetime energy and total sessions are never reported —
+and the Daze web portal shows the same gaps, so the readings are
+genuinely absent rather than lost on the way through.
+
+Those entities stay unavailable rather than reading zero. That is
+deliberate: a missing measurement is not a measurement of zero, and
+publishing it as 0 V or 0 kWh would put a false value into your
+history and, for the energy totals, record it as a meter reset.
+
+To check whether a reading is missing at the source, open the same
+charger in the Daze web portal. If the portal shows nothing or zero
+there too, the charger is not reporting it and there is nothing the
+integration can recover.
+
 ---
 
 ## Supported hardware
 
 - Daze WallBox EV chargers accessible via the Daze REST API
-- Tested with DT01 device profile
+- Tested against the DT01 device profile, and reported working on a
+  Dazebox C (device profile DB07, firmware 14.0.0) by a user
+
+Which readings you get depends on the charger. See the troubleshooting
+note below on readings the API does not report.
 
 ---
 
 ## Data & privacy
 
 - All data flows through the Daze cloud API — no local/offline control
-- The integration stores only your access token and refresh token (encrypted in HA config entry storage)
+- The integration stores only your access token and refresh token, in the Home Assistant config entry. As with every integration, that means plain text in `.storage/core.config_entries` — Home Assistant does not encrypt config entry storage. Treat your configuration directory and your backups as holding live credentials.
 - No data is sent to third parties beyond the Daze API
 
 ---
