@@ -7,10 +7,37 @@ on:
     branches: [main]
   schedule:
     - cron: "0 0 * * 0"  # Weekly validation
+  workflow_dispatch:
+    # A "Run workflow" button on the Actions tab.
+    #
+    # Two of these jobs check the repository rather than the code.
+    # Hassfest and HACS read settings — issues enabled, topics set,
+    # description, brands — none of which live in a commit. When one of
+    # those fails, the fix is made in the repository settings and there
+    # is nothing to push, so without this the only ways to re-check are
+    # re-running a stale run or inventing an empty commit.
+    inputs:
+      scope:
+        description: >-
+          all = everything; code = ruff + pyright; repository = hassfest
+          + hacs, the two that read repository settings rather than
+          the tree
+        type: choice
+        default: all
+        options:
+          - all
+          - code
+          - repository
 
 jobs:
   lint:
     name: Ruff lint
+    # Skipped only when a manual run asked for the repository checks
+    # alone. Every automatic trigger runs everything.
+    if: >-
+      github.event_name != 'workflow_dispatch'
+      || inputs.scope == 'all'
+      || inputs.scope == 'code'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -29,6 +56,12 @@ jobs:
 
   typecheck:
     name: Pyright type check
+    # Skipped only when a manual run asked for the repository checks
+    # alone. Every automatic trigger runs everything.
+    if: >-
+      github.event_name != 'workflow_dispatch'
+      || inputs.scope == 'all'
+      || inputs.scope == 'code'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -61,6 +94,11 @@ jobs:
 
   hassfest:
     name: Hassfest validation
+    # Skipped only when a manual run asked for the code checks alone.
+    if: >-
+      github.event_name != 'workflow_dispatch'
+      || inputs.scope == 'all'
+      || inputs.scope == 'repository'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -71,6 +109,11 @@ jobs:
 
   hacs:
     name: HACS validation
+    # Skipped only when a manual run asked for the code checks alone.
+    if: >-
+      github.event_name != 'workflow_dispatch'
+      || inputs.scope == 'all'
+      || inputs.scope == 'repository'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
