@@ -336,6 +336,13 @@ For a version you build and tune yourself, see
 
 For charging from solar surplus, see [docs/solar-surplus-charging.md](docs/solar-surplus-charging.md) — a worked setup that follows your export, respects the charger's 1.5 kW floor, and reads its bounds from the entity rather than hardcoding them.
 
+If you run automations **alongside** solar control — a cheap-rate
+window, a house-battery floor — read
+[docs/automations-with-solar-control.md](docs/automations-with-solar-control.md)
+first. Any automation that commands the charger turns solar control
+off, nothing re-arms it, and the examples there include the re-arm that
+closes the gap.
+
 ### Stop charging when energy price is high
 
 ```yaml
