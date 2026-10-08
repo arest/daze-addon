@@ -16,12 +16,24 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import ApiAuthError, ApiError
-from .const import DOMAIN
+from .api import (
+    COMMAND_ERROR_CODE_RPC_FAILURE,
+    ApiAuthError,
+    ApiCommandRejectedError,
+    ApiError,
+)
+from .const import (
+    DOMAIN,
+    INLINE_COMMAND_ATTEMPTS,
+    POST_COMMAND_REFRESH_DELAY,
+)
 from .coordinator import DazeDataUpdateCoordinator
+from .optimistic import OptimisticState
+from .payload import charger_offline_reason, is_charge_enabled
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -39,6 +51,7 @@ class DazeWallboxSwitchEntity(
     """Switch to start/stop charging on a Daze wallbox."""
 
     _attr_has_entity_name = True
+    _attr_translation_key = "charge_control"
 
     def __init__(
         self,
@@ -61,16 +74,71 @@ class DazeWallboxSwitchEntity(
         self._serial_number = serial_number
         self._attr_unique_id = f"{serial_number}_charge_switch"
         self._attr_device_info = device_info
+        self._optimistic = OptimisticState(tolerance=0)
 
     @property
     def is_on(self) -> bool | None:
-        """Return True if the wallbox is currently charging."""
-        if self.coordinator.data is None:
-            return None
-        status = self.coordinator.data.get("evseStatus")
-        if status is None:
-            return None
-        return str(status).lower() == CHARGING_STATE
+        """Return True while a charge is authorised and under way.
+
+        Includes the waiting-for-EV state. The charger passes through
+        it after a start takes effect, before the car begins drawing.
+
+        Immediately after a command, the commanded value is reported
+        instead of the charger's reading. The cloud API takes several
+        seconds to reflect a change, so reporting the reading during
+        that window shows the old state and makes the toggle flip back.
+        """
+        actual = (
+            is_charge_enabled(self.coordinator.data)
+            if self.coordinator.data is not None
+            else None
+        )
+
+        return self._optimistic.resolve(actual)
+
+    @property
+    def assumed_state(self) -> bool:
+        """Tell the frontend when the shown state is a guess."""
+        return self._optimistic.pending
+
+    def _set_optimistic(
+        self, value: bool, awaiting_retry: bool = False
+    ) -> None:
+        """Show the commanded state now and re-read the charger later.
+
+        Refreshing immediately is worse than not refreshing at all: the
+        cloud still reports the old state, so the entity would flip
+        back before settling.
+        """
+        self._optimistic.request(value, awaiting_retry)
+        self.async_write_ha_state()
+        self.coordinator.async_schedule_refresh_in(
+            POST_COMMAND_REFRESH_DELAY
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Drop the guess once the charger agrees with it."""
+        actual = (
+            is_charge_enabled(self.coordinator.data)
+            if self.coordinator.data is not None
+            else None
+        )
+        self._optimistic.settle(actual)
+        super()._handle_coordinator_update()
+
+    def _disarm_solar(self) -> None:
+        """Hand control back to the user.
+
+        Solar control starts and stops the charge through the API
+        client, so a toggle arriving here came from a person or their
+        automation. Without this the next tick reverses them: the car
+        is connected and the surplus is unchanged, so decide() returns
+        the opposite command within two minutes.
+        """
+        controller = self.coordinator.solar_controller
+        if controller is not None:
+            controller.disarm("charging was started or stopped manually")
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Start charging on the wallbox."""
@@ -81,12 +149,32 @@ class DazeWallboxSwitchEntity(
             )
             return
 
+        self._disarm_solar()
+
+        offline = charger_offline_reason(self.coordinator.data)
+        if offline is not None:
+            _LOGGER.info("Not sending: %s", offline)
+            self._notify_error(
+                f"The command was not sent because {offline}. "
+                "Check that the wallbox has power."
+            )
+            return
+
         try:
             _LOGGER.info(
                 "Starting charge on wallbox %s", self._serial_number
             )
-            await self._api_client.async_start_charge(self._serial_number)
-            await self.coordinator.async_request_refresh()
+            # No session ID passed: the client reads a current one.
+            # The coordinator's copy can name a session that has ended.
+            await self._api_client.async_start_charge(
+                self._serial_number, attempts=INLINE_COMMAND_ATTEMPTS
+            )
+            # Supersede any queued retry, or it would re-apply the
+            # opposite command minutes from now.
+            self.coordinator.async_cancel_background_retry(
+                f"{self._serial_number}:charge"
+            )
+            self._set_optimistic(True)
         except ApiAuthError as err:
             _LOGGER.warning(
                 "Auth error starting charge on %s: %s",
@@ -97,6 +185,15 @@ class DazeWallboxSwitchEntity(
                 "Authentication failed when trying to start charging. "
                 "Please re-authenticate the integration."
             )
+        except ApiCommandRejectedError as err:
+            if self._retry_in_background(err, True):
+                return
+            _LOGGER.info(
+                "Charger refused the command on %s: %s",
+                self._serial_number,
+                err,
+            )
+            self._notify_error(str(err))
         except ApiError as err:
             _LOGGER.warning(
                 "API error starting charge on %s: %s",
@@ -118,12 +215,28 @@ class DazeWallboxSwitchEntity(
             )
             return
 
+        self._disarm_solar()
+
+        offline = charger_offline_reason(self.coordinator.data)
+        if offline is not None:
+            _LOGGER.info("Not sending: %s", offline)
+            self._notify_error(
+                f"The command was not sent because {offline}. "
+                "Check that the wallbox has power."
+            )
+            return
+
         try:
             _LOGGER.info(
                 "Stopping charge on wallbox %s", self._serial_number
             )
-            await self._api_client.async_stop_charge(self._serial_number)
-            await self.coordinator.async_request_refresh()
+            await self._api_client.async_stop_charge(
+                self._serial_number, attempts=INLINE_COMMAND_ATTEMPTS
+            )
+            self.coordinator.async_cancel_background_retry(
+                f"{self._serial_number}:charge"
+            )
+            self._set_optimistic(False)
         except ApiAuthError as err:
             _LOGGER.warning(
                 "Auth error stopping charge on %s: %s",
@@ -134,6 +247,15 @@ class DazeWallboxSwitchEntity(
                 "Authentication failed when trying to stop charging. "
                 "Please re-authenticate the integration."
             )
+        except ApiCommandRejectedError as err:
+            if self._retry_in_background(err, False):
+                return
+            _LOGGER.info(
+                "Charger refused the command on %s: %s",
+                self._serial_number,
+                err,
+            )
+            self._notify_error(str(err))
         except ApiError as err:
             _LOGGER.warning(
                 "API error stopping charge on %s: %s",
@@ -144,6 +266,53 @@ class DazeWallboxSwitchEntity(
                 "Failed to stop charging. "
                 f"Error: {err}"
             )
+
+    def _retry_in_background(
+        self, err: ApiCommandRejectedError, turn_on: bool
+    ) -> bool:
+        """Queue a retry when the charger was unreachable.
+
+        A refusal is final and should be shown. An unreachable RPC
+        link is not: the same command usually lands a minute later,
+        so it is retried without troubling the user.
+
+        Returns:
+            True if the command was handed to the background.
+
+        """
+        if err.code != COMMAND_ERROR_CODE_RPC_FAILURE:
+            return False
+
+        verb = "Starting" if turn_on else "Stopping"
+        command = (
+            self._api_client.async_start_charge
+            if turn_on
+            else self._api_client.async_stop_charge
+        )
+
+        self.coordinator.async_retry_in_background(
+            key=f"{self._serial_number}:charge",
+            action=lambda: command(
+                self._serial_number, attempts=INLINE_COMMAND_ATTEMPTS
+            ),
+            description=f"{verb} the charge",
+            on_failure=self._clear_requested,
+        )
+
+        # Show the intent while the retries run.
+        self._set_optimistic(turn_on, awaiting_retry=True)
+        return True
+
+    def _clear_requested(self, message: str) -> None:
+        """Drop the pending state and explain why.
+
+        Without this the toggle kept asserting the commanded state for
+        another minute after the user had been told it failed, and
+        nothing redrew it when the hold finally expired.
+        """
+        self._optimistic.clear()
+        self.async_write_ha_state()
+        self._notify_error(message)
 
     def _notify_error(self, message: str) -> None:
         """Show a persistent notification in the HA frontend."""

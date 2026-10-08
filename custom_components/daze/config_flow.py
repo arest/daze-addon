@@ -13,6 +13,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import DazeApiClient
@@ -23,13 +24,23 @@ from .const import (
     CONF_EMAIL,
     CONF_EVSE_NAME,
     CONF_FIRMWARE_VERSION,
+    CONF_GRID_POWER_SENSOR,
     CONF_NETWORK_NAME,
     CONF_NETWORK_UID,
+    CONF_POLL_INTERVAL,
     CONF_REFRESH_TOKEN,
     CONF_SERIAL_NUMBER,
     CONF_SOFTWARE_VERSION,
+    CONF_SOLAR_RESERVE,
+    CONF_SUPPLY_PHASES,
+    DEFAULT_POLL_INTERVAL,
     DOMAIN,
+    MAX_POLL_INTERVAL,
+    MIN_POLL_INTERVAL,
+    SUPPLY_PHASES_SINGLE,
+    SUPPLY_PHASES_THREE,
 )
+from .payload import device_name
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,8 +130,9 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            access_token = user_input[CONF_ACCESS_TOKEN]
-            refresh_token = user_input[CONF_REFRESH_TOKEN]
+            # Strip pasted whitespace/newlines and quotes.
+            access_token = user_input[CONF_ACCESS_TOKEN].strip().strip('"')
+            refresh_token = user_input[CONF_REFRESH_TOKEN].strip().strip('"')
 
             try:
                 info = await _validate_tokens(
@@ -303,7 +315,9 @@ class DazeConfigFlow(ConfigFlow, domain=DOMAIN):
 
         evse = evses[0]
         original_evse_name = evse.get("evseName", "Daze Wallbox")
-        self._evse_name = f"{original_evse_name} Daze"
+        # Used as reported: the charger usually names itself after the
+        # vendor already, so adding a suffix duplicated it.
+        self._evse_name = device_name(evse)
         self._serial_number = evse.get("serialNumber", "")
         self._device_profile = evse.get("deviceProfile", "")
         self._firmware_version = evse.get("firmwareVersion", "")
@@ -358,8 +372,79 @@ class DazeOptionsFlowHandler(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the options."""
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+        """Let the user choose the poll interval and the grid sensor.
 
-        return self.async_show_form(step_id="init", data_schema=vol.Schema({}))
+        Faster polling makes the entities more responsive at the cost
+        of more requests against the Daze cloud API. The entry reloads
+        on save, so the new interval takes effect immediately.
+
+        The single signed grid power sensor feeds solar surplus control
+        and is optional: leaving it empty is a supported configuration,
+        and solar control simply refuses to arm without it.
+        """
+        if user_input is not None:
+            # Carry forward only the one key this form does not own —
+            # the solar reserve, written directly to these same options
+            # by Task 7's own reserve entity — rather than blanket-
+            # merging the rest of the stored options over the submitted
+            # ones. Every field this form *does* own is vol.Optional
+            # with no default, so clearing one in the frontend omits it
+            # from user_input rather than submitting an empty value; a
+            # blanket merge would read that omission as "unchanged" and
+            # silently restore the stale value, making the sensor
+            # impossible to clear once set — the spec calls empty a
+            # supported configuration.
+            data = dict(user_input)
+            if CONF_SOLAR_RESERVE in self._config_entry.options:
+                data[CONF_SOLAR_RESERVE] = self._config_entry.options[
+                    CONF_SOLAR_RESERVE
+                ]
+            return self.async_create_entry(title="", data=data)
+
+        current = self._config_entry.options.get(
+            CONF_POLL_INTERVAL,
+            self._config_entry.data.get(
+                CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL
+            ),
+        )
+
+        options = self._config_entry.options
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_POLL_INTERVAL, default=current
+                ): vol.All(
+                    vol.Coerce(int),
+                    vol.Range(min=MIN_POLL_INTERVAL, max=MAX_POLL_INTERVAL),
+                ),
+                # Optional so the integration works without solar. Solar
+                # control refuses to leave "off" until the sensor is set.
+                vol.Optional(
+                    CONF_GRID_POWER_SENSOR,
+                    description={
+                        "suggested_value": options.get(CONF_GRID_POWER_SENSOR)
+                    },
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor", device_class="power"
+                    )
+                ),
+                # Optional so the form can still be saved without it,
+                # not because it has a default: solar control refuses
+                # to arm until it is answered.
+                vol.Optional(
+                    CONF_SUPPLY_PHASES,
+                    description={
+                        "suggested_value": options.get(CONF_SUPPLY_PHASES)
+                    },
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[SUPPLY_PHASES_SINGLE, SUPPLY_PHASES_THREE],
+                        translation_key="supply_phases",
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }
+        )
+
+        return self.async_show_form(step_id="init", data_schema=schema)

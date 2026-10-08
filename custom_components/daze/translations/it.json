@@ -83,7 +83,15 @@
         "name": "Temperatura involucro"
       },
       "evse_status": {
-        "name": "Stato EVSE"
+        "name": "Stato EVSE",
+        "state": {
+          "idle": "Inattivo",
+          "waiting_for_ev": "In attesa del veicolo",
+          "charging": "In carica",
+          "paused": "In pausa",
+          "error": "Errore",
+          "offline": "Non in linea"
+        }
       },
       "grid_max_power": {
         "name": "Potenza massima rete",
@@ -94,23 +102,8 @@
         "entity_category": "diagnostic"
       },
       "is_three_phase": {
-        "name": "Alimentazione trifase",
+        "name": "Caricatore trifase",
         "entity_category": "diagnostic"
-      },
-      "last_session_energy": {
-        "name": "Energia ultima sessione"
-      },
-      "last_session_duration": {
-        "name": "Durata ultima sessione"
-      },
-      "last_session_cost": {
-        "name": "Costo ultima sessione"
-      },
-      "last_session_start": {
-        "name": "Inizio ultima sessione"
-      },
-      "last_session_end": {
-        "name": "Fine ultima sessione"
       },
       "lifetime_energy": {
         "name": "Energia totale"
@@ -118,9 +111,8 @@
       "total_sessions": {
         "name": "Sessioni totali"
       },
-      "next_scheduled_charge": {
-        "name": "Prossima carica programmata",
-        "entity_category": "diagnostic"
+      "solar_surplus": {
+        "name": "Surplus solare"
       }
     },
     "switch": {
@@ -130,13 +122,54 @@
     },
     "number": {
       "max_charging_current": {
-        "name": "Corrente massima di carica",
+        "name": "Corrente",
         "entity_category": "config"
+      },
+      "max_charging_power": {
+        "name": "Potenza",
+        "entity_category": "config"
+      },
+      "solar_reserve": {
+        "name": "Riserva solare"
+      },
+      "solar_stop_delay": {
+        "name": "Ritardo di arresto solare"
+      },
+      "solar_min_run": {
+        "name": "Tempo minimo di carica solare"
       }
     },
     "select": {
       "operation_mode": {
         "name": "Modalità operativa"
+      },
+      "solar_control": {
+        "name": "Controllo solare"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opzioni Daze Wallbox",
+        "description": "Ogni quanto interrogare l'API cloud di Daze e quale sensore riporta la potenza netta di rete. I valori positivi indicano prelievo; quelli negativi immissione. Il sensore serve solo per il controllo solare; lascialo vuoto altrimenti.",
+        "data": {
+          "poll_interval": "Intervallo di aggiornamento (secondi)",
+          "grid_power_sensor": "Sensore di potenza netta di rete",
+          "supply_phases": "Alimentazione di rete"
+        },
+        "data_description": {
+          "grid_power_sensor": "Potenza netta di rete in W: positiva in prelievo, negativa in immissione. Con una battery domestica, usare un template di carico domestico meno potenza PV — vedi README.",
+          "supply_phases": "Quante fasi alimentano la casa, non il caricatore. Un contatore trifase riporta il surplus sommato sulle tre fasi e un caricatore monofase può usarne solo una, quindi il controllo solare non si attiva finché non è impostato."
+        }
+      }
+    }
+  },
+  "selector": {
+    "supply_phases": {
+      "options": {
+        "single": "Monofase",
+        "three": "Trifase"
       }
     }
   }

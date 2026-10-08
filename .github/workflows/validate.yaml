@@ -7,19 +7,46 @@ on:
     branches: [main]
   schedule:
     - cron: "0 0 * * 0"  # Weekly validation
+  workflow_dispatch:
+    # A "Run workflow" button on the Actions tab.
+    #
+    # Two of these jobs check the repository rather than the code.
+    # Hassfest and HACS read settings — issues enabled, topics set,
+    # description, brands — none of which live in a commit. When one of
+    # those fails, the fix is made in the repository settings and there
+    # is nothing to push, so without this the only ways to re-check are
+    # re-running a stale run or inventing an empty commit.
+    inputs:
+      scope:
+        description: >-
+          all = everything; code = ruff + pyright; repository = hassfest
+          + hacs, the two that read repository settings rather than
+          the tree
+        type: choice
+        default: all
+        options:
+          - all
+          - code
+          - repository
 
 jobs:
   lint:
     name: Ruff lint
+    # Skipped only when a manual run asked for the repository checks
+    # alone. Every automatic trigger runs everything.
+    if: >-
+      github.event_name != 'workflow_dispatch'
+      || inputs.scope == 'all'
+      || inputs.scope == 'code'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Install ruff
         run: pip install ruff
@@ -29,40 +56,68 @@ jobs:
 
   typecheck:
     name: Pyright type check
+    # Skipped only when a manual run asked for the repository checks
+    # alone. Every automatic trigger runs everything.
+    if: >-
+      github.event_name != 'workflow_dispatch'
+      || inputs.scope == 'all'
+      || inputs.scope == 'code'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          # Home Assistant tracks Python closely: the release installed
+          # here is whichever newest one still supports this version.
+          # When that stops being any release at all, the install below
+          # fails and the job goes red, which is the intended signal to
+          # raise this number rather than something to work around.
+          python-version: "3.13"
 
       - name: Install dependencies
+        # Not `2>/dev/null || true`. homeassistant-stubs depends on
+        # homeassistant, which requires Python >= 3.13.2, so on the 3.12
+        # this workflow used to pin the install failed, the redirect hid
+        # it, and pyright ran with nothing to resolve `homeassistant.*`
+        # against. That produced 59 reportMissingImports errors and a
+        # red job that said nothing about the code. A failure to install
+        # the stubs must fail the job.
         run: |
           pip install pyright
-          pip install homeassistant-stubs 2>/dev/null || true
+          pip install homeassistant-stubs
 
       - name: Run pyright
         run: pyright custom_components/daze/
 
   hassfest:
     name: Hassfest validation
+    # Skipped only when a manual run asked for the code checks alone.
+    if: >-
+      github.event_name != 'workflow_dispatch'
+      || inputs.scope == 'all'
+      || inputs.scope == 'repository'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Run hassfest
         uses: home-assistant/actions/hassfest@master
 
   hacs:
     name: HACS validation
+    # Skipped only when a manual run asked for the code checks alone.
+    if: >-
+      github.event_name != 'workflow_dispatch'
+      || inputs.scope == 'all'
+      || inputs.scope == 'repository'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Run HACS validation
         uses: hacs/action@main

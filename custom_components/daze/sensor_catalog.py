@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 type ValueFn = Callable[[dict[str, Any]], Any | None]
@@ -32,7 +33,8 @@ EVSE_STATUS_MAP: dict[str, str] = {
     "paused": "paused",
     "error": "error",
     "offline": "offline",
-    "waiting_for_car": "idle",
+    "waiting_for_ev": "waiting_for_ev",
+    "waiting_for_car": "waiting_for_ev",
     "waiting_for_charge": "idle",
     "play_charge": "charging",
     "pause_charge": "paused",
@@ -57,6 +59,7 @@ def presence_on_off(data: dict[str, Any], key: str) -> str | None:
 
 
 _SCHEDULED_CHARGE_KEYS: tuple[str, ...] = (
+    "nextScheduleInfo",
     "nextScheduledCharge",
     "scheduledChargeTime",
     "scheduledStart",
@@ -64,12 +67,73 @@ _SCHEDULED_CHARGE_KEYS: tuple[str, ...] = (
 )
 
 
+# Fields a schedule object might carry the start time under. The
+# charger reported nextScheduleInfo as null whenever it was observed,
+# so the shape is unconfirmed and every candidate is tried.
+_SCHEDULE_TIME_FIELDS = (
+    "startTime",
+    "start",
+    "scheduledStart",
+    "nextStart",
+    "time",
+)
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    """Coerce an API value into a timezone-aware datetime.
+
+    A timestamp sensor requires a datetime. Returning the raw string or
+    epoch the API provides raises "Invalid datetime" on every state
+    write, which is the same failure that returning the nested object
+    caused.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+    if isinstance(value, (int, float)):
+        # Milliseconds if it is far too large to be seconds.
+        seconds = value / 1000 if value > 1e11 else value
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    return None
+
+
 def get_next_scheduled_charge(data: dict[str, Any]) -> Any | None:
-    """Return the first present schedule timestamp field."""
+    """Return the next scheduled charge time, if one is set.
+
+    nextScheduleInfo arrives as an object rather than a timestamp, and
+    merge_payload preserves it as one. Handing that object to a
+    timestamp sensor makes Home Assistant reject every state write with
+    "Invalid datetime", so the timestamp is extracted from it and
+    anything that is not a scalar is discarded.
+    """
     for key in _SCHEDULED_CHARGE_KEYS:
         value = data.get(key)
-        if value is not None:
-            return value
+
+        if value is None:
+            continue
+
+        if isinstance(value, dict):
+            for field in _SCHEDULE_TIME_FIELDS:
+                parsed = _as_datetime(value.get(field))
+                if parsed is not None:
+                    return parsed
+            continue
+
+        parsed = _as_datetime(value)
+        if parsed is not None:
+            return parsed
+
     return None
 
 
@@ -135,19 +199,26 @@ EVSE_SENSOR_CATALOG: tuple[EVSESensorSpec, ...] = (
         device_class="temperature",
         state_class="measurement",
         native_unit_of_measurement="°C",
-        value_fn=lambda data: data.get("boardTemperature"),
+        value_fn=lambda data: data.get("lastBoardL1Temperature"),
     ),
     EVSESensorSpec(
         key="case_temperature",
         device_class="temperature",
         state_class="measurement",
         native_unit_of_measurement="°C",
-        value_fn=lambda data: data.get("caseTemperature"),
+        value_fn=lambda data: data.get("lastCaseTemperature"),
     ),
     EVSESensorSpec(
         key="evse_status",
         device_class="enum",
-        options=("idle", "charging", "paused", "error", "offline"),
+        options=(
+            "idle",
+            "waiting_for_ev",
+            "charging",
+            "paused",
+            "error",
+            "offline",
+        ),
         value_fn=get_evse_status,
     ),
     EVSESensorSpec(
@@ -155,14 +226,14 @@ EVSE_SENSOR_CATALOG: tuple[EVSESensorSpec, ...] = (
         device_class="power",
         native_unit_of_measurement="W",
         entity_category="diagnostic",
-        value_fn=lambda data: data.get("gridMaxPower"),
+        value_fn=lambda data: data.get("supplyGridMaxPower"),
     ),
     EVSESensorSpec(
         key="is_photovoltaic",
         device_class="enum",
         entity_category="diagnostic",
         options=("on", "off"),
-        value_fn=lambda data: presence_on_off(data, "is_photovoltaic"),
+        value_fn=lambda data: presence_on_off(data, "photovoltaic"),
     ),
     EVSESensorSpec(
         key="is_three_phase",
@@ -171,34 +242,8 @@ EVSE_SENSOR_CATALOG: tuple[EVSESensorSpec, ...] = (
         options=("on", "off"),
         value_fn=lambda data: presence_on_off(data, "evseIsThreePhase"),
     ),
-    EVSESensorSpec(
-        key="last_session_energy",
-        device_class="energy",
-        state_class="total_increasing",
-        native_unit_of_measurement="Wh",
-        value_fn=lambda data: data.get("last_session_energy"),
-    ),
-    EVSESensorSpec(
-        key="last_session_duration",
-        native_unit_of_measurement="min",
-        value_fn=lambda data: data.get("last_session_duration"),
-    ),
-    EVSESensorSpec(
-        key="last_session_cost",
-        device_class="monetary",
-        native_unit_of_measurement="EUR",
-        value_fn=lambda data: data.get("last_session_cost"),
-    ),
-    EVSESensorSpec(
-        key="last_session_start",
-        device_class="timestamp",
-        value_fn=lambda data: data.get("last_session_start"),
-    ),
-    EVSESensorSpec(
-        key="last_session_end",
-        device_class="timestamp",
-        value_fn=lambda data: data.get("last_session_end"),
-    ),
+    # Session-dependent sensors removed — they show "Unknown" until the
+    # first charge completes and provide no value in the meantime.
     EVSESensorSpec(
         key="lifetime_energy",
         device_class="energy",
@@ -211,23 +256,17 @@ EVSE_SENSOR_CATALOG: tuple[EVSESensorSpec, ...] = (
         state_class="total_increasing",
         value_fn=lambda data: data.get("total_sessions"),
     ),
-    EVSESensorSpec(
-        key="next_scheduled_charge",
-        device_class="timestamp",
-        entity_category="diagnostic",
-        value_fn=get_next_scheduled_charge,
-    ),
 )
 
 
+# Only keys the catalog still exposes belong here: the membership test
+# in sensor.py runs against live entities, so a key for a sensor that
+# no longer exists can never match and only misleads the next reader.
 RESTORE_STATE_KEYS: frozenset[str] = frozenset(
     {
         "delivered_energy",
         "lifetime_energy",
         "total_sessions",
-        "last_session_energy",
-        "last_session_cost",
-        "last_session_duration",
     }
 )
 

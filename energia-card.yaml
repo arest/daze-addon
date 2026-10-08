@@ -1,0 +1,94 @@
+type: grid
+cards:
+  - type: custom:apexcharts-card
+    view_layout:
+      column_span: 1
+    style: |
+      ha-card {
+        background-color: var(--primary-background-color);
+        box-shadow: none;
+        width: 100%;
+      }
+    header:
+      show: true
+      colorize_states: true
+      show_states: true
+      title: Power Flow (W)
+    graph_span: 24h
+    show:
+      last_updated: true
+    update_interval: 2min
+    apex_config:
+      chart:
+        background: transparent
+        height: 320px
+        width: 100%
+      toolbar:
+        show: true
+      legend:
+        show: true
+        position: top
+        horizontalAlign: right
+        fontSize: 10px
+      yaxis:
+        - id: power
+          decimalsInFloat: 0
+          labels:
+            formatter: |
+              EVAL:function(value) {
+                return value.toFixed(0) + " W";
+              }
+      xaxis:
+        type: datetime
+        tooltip:
+          enabled: false
+        labels:
+          datetimeFormatter:
+            hour: HH:mm
+      grid:
+        show: false
+    all_series_config:
+      stroke_width: 3
+      type: area
+      group_by:
+        func: avg
+        duration: 5min
+      show:
+        in_header: false
+        name_in_header: false
+        extremas: false
+    series:
+      - entity: sensor.attic_solar_panel_total_pv_power
+        name: Solar Generation
+        yaxis_id: power
+        color: '#FFC800'
+        opacity: 0.4
+      - entity: sensor.attic_solar_panel_household_load_power
+        name: Power Consumption
+        yaxis_id: power
+        color: '#FF9800'
+        opacity: 0.4
+      - entity: sensor.attic_solar_panel_battery_charge_power
+        name: Battery Charge
+        yaxis_id: power
+        color: '#9C27B0'
+        opacity: 0.4
+      - entity: sensor.attic_solar_panel_battery_discharge_power
+        name: Battery Discharge
+        yaxis_id: power
+        color: '#F44336'
+        opacity: 0.4
+        transform: return x * -1;
+      - entity: sensor.attic_solar_panel_grid_power_net
+        name: Grid
+        yaxis_id: power
+        color: '#2196F3'
+        opacity: 0.4
+        transform: return x * -1;
+    grid_options:
+      columns: 36
+      rows: 6
+  - type: custom:heading-card
+    heading:
+      title: Energia
+column_span: 12

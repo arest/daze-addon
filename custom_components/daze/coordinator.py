@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -11,26 +12,62 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
 
-from .api import ApiAuthError, ApiError, DazeApiClient
+from .api import ApiAuthError, ApiError, ApiNotFoundError, DazeApiClient
 from .api.auth import DazeAuthClient
 from .const import (
+    BACKGROUND_RETRY_DELAYS,
     CONF_ACCESS_TOKEN,
     CONF_NETWORK_UID,
+    CONF_POLL_INTERVAL,
     CONF_REFRESH_TOKEN,
     CONF_SERIAL_NUMBER,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
+    MAX_POLL_INTERVAL,
+    MIN_POLL_INTERVAL,
 )
 from .models import RechargeSession
+from .optimistic import OptimisticState
+from .payload import merge_payload
 
 _LOGGER = logging.getLogger(__name__)
 
 type DazeCoordinatorData = dict[str, Any]
+
+# Session history changes only when a charge ends, so it does not need
+# the live metric cadence. Re-requesting the full history on every poll
+# was wasteful and risked upstream rate limiting.
+SESSION_FETCH_INTERVAL = 300  # seconds
+
+# Some accounts get HTTP 404 from the recharge-session endpoint. That is
+# a durable condition, not a transient error, so back off hard instead
+# of retrying every poll and filling the log with warnings.
+SESSION_MISSING_RETRY_INTERVAL = 3600  # seconds
+
+# After a transient failure, try again sooner than the normal
+# interval but not on every poll.
+SESSION_ERROR_RETRY_INTERVAL = 60  # seconds
+
+# The charger record holds configuration and slow-moving readings,
+# so it does not need the live metric cadence.
+EVSE_FETCH_INTERVAL = 120  # seconds
+
+# A charger does not change state the instant a command is accepted.
+# Starting passes through waiting-for-EV before charging, and pausing
+# takes its own time to register. A single refresh straight after the
+# command reads the old state and leaves the UI stale until the next
+# ordinary poll, up to DEFAULT_POLL_INTERVAL later.
+#
+# These offsets re-read the charger over the following half minute so
+# the entities follow the transition. They are scheduled rather than
+# awaited, so a service call still returns promptly.
+SETTLE_REFRESH_DELAYS = (3, 8, 15, 30)
 
 
 class DazeDataUpdateCoordinator(
@@ -68,6 +105,31 @@ class DazeDataUpdateCoordinator(
         self._last_fail_time: float | None = None
         self._total_updates: int = 0
         self._consecutive_failures: int = 0
+        self._cached_sessions: list[RechargeSession] = []
+        self._cached_evse: dict[str, Any] = {}
+        self._next_evse_fetch: float = 0.0
+        self._next_session_fetch: float = 0.0
+        self._sessions_missing_logged: bool = False
+        # Whether the session history has ever been read successfully.
+        # Distinguishes "this charger has no sessions", which is a
+        # real answer of zero, from "the history has never been
+        # readable", which is not an answer at all. The cache is an
+        # empty list in both cases, so nothing else here can tell
+        # them apart. See session_fields().
+        self._sessions_ever_read: bool = False
+        self._pending_retries: dict[str, Callable[[], None]] = {}
+        self._pending_timers: set[Callable[[], None]] = set()
+        # The charging limit is one setting with two views, in amps
+        # and in watts. Held here, in milliamps, so both entities
+        # show a pending change at once instead of disagreeing
+        # until the next refresh.
+        self._limit_state = OptimisticState()
+        self._limit_listeners: list[Callable[[], None]] = []
+        # Set by async_setup_entry. Declared here so every entity and
+        # service can read it directly: a getattr default would turn a
+        # wiring mistake into silent no-disarm, which is the failure
+        # this whole mechanism exists to prevent.
+        self.solar_controller: Any = None
 
         super().__init__(
             hass,
@@ -111,6 +173,244 @@ class DazeDataUpdateCoordinator(
         """Return the network UID."""
         return self._network_uid
 
+    def async_retry_in_background(
+        self,
+        key: str,
+        action: Callable[[], Awaitable[Any]],
+        description: str,
+        on_failure: Callable[[str], None] | None = None,
+    ) -> None:
+        """Keep retrying a command after the user has stopped waiting.
+
+        The Daze RPC link refuses commands for minutes at a time. Held
+        open, that means a service call that blocks and then fails.
+        Retried in the background, the command usually lands and the
+        user never sees a failure at all.
+
+        A second request for the same key replaces the first, so
+        repeatedly nudging a control does not stack up retries.
+
+        Args:
+            key: Identifies the command, so a newer one supersedes it.
+            action: Awaitable performing the command. Raising means
+                the attempt failed.
+            description: Used in log messages and the failure notice.
+            on_failure: Called with a message when every attempt fails.
+
+        """
+        self.async_cancel_background_retry(key)
+
+        attempts = list(BACKGROUND_RETRY_DELAYS)
+        state = {"index": 0, "cancelled": False}
+
+        async def _attempt(_now: Any) -> None:
+            """Run one background attempt and schedule the next."""
+            if state["cancelled"]:
+                return
+
+            index = state["index"]
+            try:
+                await action()
+            except Exception as err:  # noqa: BLE001 - reported below
+                if state["cancelled"]:
+                    # Cancelled while this attempt was in flight, which
+                    # is a window of tens of seconds. Rescheduling here
+                    # would re-register the chain and undo both the
+                    # supersede on a newer command and the shutdown on
+                    # unload.
+                    _LOGGER.debug(
+                        "Dropping superseded retry for %s", description
+                    )
+                    return
+
+                state["index"] = index + 1
+
+                if state["index"] < len(attempts):
+                    delay = attempts[state["index"]]
+                    _LOGGER.debug(
+                        "Background retry %d/%d for %s failed (%s), "
+                        "next in %ss",
+                        index + 1,
+                        len(attempts),
+                        description,
+                        err,
+                        delay,
+                    )
+                    _schedule(delay)
+                    return
+
+                self._pending_retries.pop(key, None)
+                _LOGGER.warning(
+                    "%s never succeeded after %d background attempts: %s",
+                    description,
+                    len(attempts),
+                    err,
+                )
+                if on_failure is not None:
+                    on_failure(
+                        f"{description} could not be delivered to the "
+                        f"charger. The Daze service was unreachable for "
+                        f"several minutes."
+                    )
+                return
+
+            if state["cancelled"]:
+                _LOGGER.debug(
+                    "Superseded retry for %s succeeded; not refreshing",
+                    description,
+                )
+                return
+
+            self._pending_retries.pop(key, None)
+            _LOGGER.info(
+                "%s succeeded on background attempt %d", description, index + 1
+            )
+            # The settings a command changes live only in the EVSE
+            # record, which is cached, so confirming the change needs
+            # a fresh copy.
+            self._next_evse_fetch = 0.0
+            await self.async_request_refresh()
+
+        def _schedule(delay: int) -> None:
+            """Queue the next attempt and remember how to cancel it."""
+            cancel = async_call_later(self.hass, delay, _attempt)
+
+            def _cancel() -> None:
+                state["cancelled"] = True
+                cancel()
+
+            self._pending_retries[key] = _cancel
+
+        _LOGGER.info(
+            "%s did not reach the charger; retrying in the background "
+            "over the next %d seconds",
+            description,
+            sum(attempts),
+        )
+        _schedule(attempts[0])
+
+    @property
+    def limit_state(self) -> OptimisticState:
+        """Return the shared pending charging limit, in milliamps."""
+        return self._limit_state
+
+    def async_add_limit_listener(
+        self, listener: Callable[[], None]
+    ) -> Callable[[], None]:
+        """Register a callback for changes to the pending limit.
+
+        Args:
+            listener: Called when the pending limit changes.
+
+        Returns:
+            A callable that unregisters the listener.
+
+        """
+        self._limit_listeners.append(listener)
+
+        def _remove() -> None:
+            if listener in self._limit_listeners:
+                self._limit_listeners.remove(listener)
+
+        return _remove
+
+    def async_notify_limit_listeners(self) -> None:
+        """Tell both views of the limit to redraw.
+
+        Called after one of them requests a change, so the other does
+        not keep showing the previous value until the next poll.
+        """
+        for listener in list(self._limit_listeners):
+            listener()
+
+    def async_shutdown_timers(self) -> None:
+        """Cancel every callback this coordinator has scheduled.
+
+        Settle refreshes and background retries outlive the code that
+        scheduled them. Unloading the entry, which also happens on
+        every options change, otherwise leaves them firing against a
+        discarded coordinator and a closed API client. Home Assistant
+        reports those as lingering timers.
+        """
+        for cancel in list(self._pending_timers):
+            cancel()
+        self._pending_timers.clear()
+
+        for key in list(self._pending_retries):
+            self.async_cancel_background_retry(key)
+
+        self._limit_listeners.clear()
+
+        _LOGGER.debug("Cancelled pending timers for %s", self._serial_number)
+
+    def async_cancel_background_retry(self, key: str) -> None:
+        """Drop any pending background retry for a command."""
+        cancel = self._pending_retries.pop(key, None)
+        if cancel is not None:
+            cancel()
+
+    def _schedule_tracked_refresh(self, delay: int, reason: str) -> None:
+        """Schedule one refresh and keep a handle so it can be cancelled.
+
+        Each call gets its own scope. Scheduling inside a loop and
+        closing over the loop variable would leave every callback
+        discarding the last handle rather than its own.
+
+        Args:
+            delay: Seconds until the refresh runs.
+            reason: Used in the debug log.
+
+        """
+        handle: list[Any] = []
+
+        async def _refresh(_now: Any) -> None:
+            """Re-read the charger."""
+            if handle:
+                self._pending_timers.discard(handle[0])
+
+            _LOGGER.debug(
+                "%s refresh for %s at +%ss",
+                reason,
+                self._serial_number,
+                delay,
+            )
+            # The charging current and eco mode live only in the EVSE
+            # record, which is cached. Without dropping that cache the
+            # refresh re-reads a stale copy and the entity reverts.
+            self._next_evse_fetch = 0.0
+            await self.async_request_refresh()
+
+        cancel = async_call_later(self.hass, delay, _refresh)
+        handle.append(cancel)
+        self._pending_timers.add(cancel)
+
+    def async_schedule_refresh_in(self, delay: int) -> None:
+        """Re-read the charger once, after a delay.
+
+        Used after a command. Refreshing immediately reads the state
+        from before the change, because the cloud API lags the charger
+        by several seconds.
+
+        Scheduled, not awaited: the caller returns immediately.
+        """
+        self._next_evse_fetch = 0.0
+        self._schedule_tracked_refresh(delay, "Post-command")
+
+    def async_schedule_settle_refresh(self) -> None:
+        """Re-read the charger a few times after a command.
+
+        Commands take effect asynchronously: the charger moves through
+        intermediate states for several seconds. Refreshing once
+        immediately captures the state before the change, so schedule
+        further reads across the transition.
+
+        Scheduled, not awaited: the caller returns immediately.
+        """
+        self._next_evse_fetch = 0.0
+
+        for delay in SETTLE_REFRESH_DELAYS:
+            self._schedule_tracked_refresh(delay, "Settle")
+
     async def _async_update_data(self) -> DazeCoordinatorData:
         """Fetch the latest socket remote info and session data.
 
@@ -132,12 +432,33 @@ class DazeDataUpdateCoordinator(
         self._total_updates += 1
 
         try:
-            data = await self._api_client.async_get_socket_remote_info(
+            remote_info = await self._api_client.async_get_socket_remote_info(
                 self._serial_number
             )
+
+            # The EVSE record supplies temperatures, grid limits, eco
+            # mode and the configured current, none of which appear in
+            # remoteInfo. It changes slowly, so it is cached.
+            if time.time() >= self._next_evse_fetch:
+                try:
+                    self._cached_evse = (
+                        await self._api_client.async_get_evse_record(
+                            self._network_uid, self._serial_number
+                        )
+                    )
+                except ApiError as err:
+                    _LOGGER.debug(
+                        "Could not refresh the EVSE record: %s", err
+                    )
+                else:
+                    self._next_evse_fetch = time.time() + EVSE_FETCH_INTERVAL
+
+            data = merge_payload(remote_info, self._cached_evse)
+
             _LOGGER.debug(
-                "Coordinator fetched socket data for %s",
+                "Coordinator fetched socket data for %s (%d fields)",
                 self._serial_number,
+                len(data),
             )
         except ApiAuthError as err:
             self._last_fail_time = time.time()
@@ -170,10 +491,16 @@ class DazeDataUpdateCoordinator(
         self._last_success_time = time.time()
         self._consecutive_failures = 0
 
-        # Fetch session data (secondary — failures are non-fatal)
-        sessions = await self._async_fetch_sessions()
+        # Fetch session data (secondary — failures are non-fatal).
+        # Throttled: history only changes when a charge ends.
+        if time.time() >= self._next_session_fetch:
+            fetched = await self._async_fetch_sessions()
+            if fetched is not None:
+                self._cached_sessions = fetched
+
+        sessions = self._cached_sessions
         data["sessions"] = sessions
-        data.update(self._compute_session_fields(sessions))
+        data.update(self.session_fields())
 
         _LOGGER.debug(
             "Coordinator data for %s: %d sessions loaded",
@@ -182,6 +509,38 @@ class DazeDataUpdateCoordinator(
         )
 
         return data
+
+    def session_fields(self) -> dict[str, Any]:
+        """Return the session sensor values for the cached history.
+
+        Wraps _compute_session_fields with the one fact that function
+        cannot see: whether the history was ever readable at all.
+
+        _compute_session_fields answers for the list it is given, and
+        an empty list means zero sessions and zero lifetime energy.
+        That is the right answer for a charger that genuinely has no
+        history. It is the wrong answer for a charger whose history
+        endpoint has 404'd since the first poll, where the cache is
+        empty for want of a reading rather than for want of sessions —
+        and the two are indistinguishable from the list alone.
+
+        The difference matters because lifetime_energy and
+        total_sessions are declared total_increasing. Home Assistant
+        reads a step down to zero on such a sensor as a meter reset
+        and adds the previous total into its running sum, so a
+        fabricated zero does not merely display wrongly, it corrupts
+        the long-term statistics and double counts the whole lifetime
+        if the endpoint later recovers. None displays as unavailable
+        and is recorded as nothing, which is what the 404 log line
+        already promises the user will happen.
+        """
+        fields = self._compute_session_fields(self._cached_sessions)
+
+        if not self._sessions_ever_read:
+            fields["lifetime_energy"] = None
+            fields["total_sessions"] = None
+
+        return fields
 
     @staticmethod
     def _compute_session_fields(
@@ -234,15 +593,17 @@ class DazeDataUpdateCoordinator(
 
     async def _async_fetch_sessions(
         self,
-    ) -> list[RechargeSession]:
+    ) -> list[RechargeSession] | None:
         """Fetch recharge session history.
 
-        Failures are logged and return an empty list — the coordinator
-        continues to work with live socket data even if sessions are
-        temporarily unavailable.
+        Returns None on failure rather than an empty list. An empty
+        list is a real answer meaning "no sessions", and assigning it
+        over a good history resets lifetime_energy to zero. That sensor
+        is total_increasing, so Home Assistant reads the drop as a
+        meter reset and double counts on recovery.
 
         Returns:
-            A list of RechargeSession objects (may be empty).
+            The sessions, or None if they could not be fetched.
 
         """
         try:
@@ -256,36 +617,86 @@ class DazeDataUpdateCoordinator(
                 len(sessions_raw),
                 self._network_uid,
             )
+            self._sessions_missing_logged = False
+            # Latched on the first success and never cleared: once a
+            # figure has been read it stays known, so a later 404 must
+            # not blank it.
+            self._sessions_ever_read = True
+            # Armed only on success: arming first meant a transient
+            # error silently froze the history for five minutes.
+            self._next_session_fetch = time.time() + SESSION_FETCH_INTERVAL
             return [
                 RechargeSession.from_dict(s) for s in sessions_raw
             ]
+
+        except ApiNotFoundError:
+            # The endpoint is absent for this account. Say so once, then
+            # back off: retrying every poll only spams the log.
+            self._next_session_fetch = (
+                time.time() + SESSION_MISSING_RETRY_INTERVAL
+            )
+
+            if not self._sessions_missing_logged:
+                self._sessions_missing_logged = True
+                _LOGGER.info(
+                    "Recharge session history is unavailable for network "
+                    "%s (the API returned 404). Session and lifetime "
+                    "sensors will stay empty; live metrics and charge "
+                    "control are unaffected. Retrying hourly.",
+                    self._network_uid,
+                )
+
+            # Not an empty list. A 404 says this account cannot read
+            # the endpoint, which is not the same fact as the charger
+            # having no sessions: an account that had a history and
+            # then starts receiving 404s would have it overwritten
+            # with [], dropping lifetime_energy to zero. That sensor
+            # is total_increasing, so Home Assistant records a meter
+            # reset and counts the whole lifetime a second time when
+            # the endpoint comes back — the exact failure the None
+            # return in this method's docstring exists to prevent.
+            #
+            # On a first-ever 404 the cache is already empty, so the
+            # session and lifetime sensors stay empty either way and
+            # the logged message above still describes what the user
+            # sees.
+            return None
 
         except ApiAuthError:
             # Auth errors on session endpoint are unexpected (the
             # socket fetch already validated the token), but handle
             # gracefully — don't double-trigger re-auth.
             _LOGGER.warning(
-                "Auth error fetching sessions for %s — sessions "
-                "unavailable until next poll",
+                "Auth error fetching sessions for %s — keeping the "
+                "previous history",
                 self._serial_number,
             )
-            return []
+            self._next_session_fetch = (
+                time.time() + SESSION_ERROR_RETRY_INTERVAL
+            )
+            return None
 
         except ApiError as err:
             _LOGGER.warning(
-                "API error fetching sessions for %s: %s — "
-                "sessions unavailable until next poll",
+                "API error fetching sessions for %s: %s — keeping the "
+                "previous history",
                 self._serial_number,
                 err,
             )
-            return []
+            self._next_session_fetch = (
+                time.time() + SESSION_ERROR_RETRY_INTERVAL
+            )
+            return None
 
         except Exception:
             _LOGGER.exception(
                 "Unexpected error fetching sessions for %s",
                 self._serial_number,
             )
-            return []
+            self._next_session_fetch = (
+                time.time() + SESSION_ERROR_RETRY_INTERVAL
+            )
+            return None
 
 
 async def async_setup_coordinator(
@@ -305,6 +716,19 @@ async def async_setup_coordinator(
         The initialised DazeDataUpdateCoordinator.
 
     """
+    # Options win over the value captured at setup, so changing the
+    # interval takes effect on reload without reconfiguring.
+    poll_interval = entry.options.get(
+        CONF_POLL_INTERVAL,
+        entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+    )
+    try:
+        poll_interval = int(poll_interval)
+    except (TypeError, ValueError):
+        poll_interval = DEFAULT_POLL_INTERVAL
+
+    poll_interval = max(MIN_POLL_INTERVAL, min(MAX_POLL_INTERVAL, poll_interval))
+
     access_token = entry.data[CONF_ACCESS_TOKEN]
     refresh_token = entry.data[CONF_REFRESH_TOKEN]
     serial_number = entry.data[CONF_SERIAL_NUMBER]
@@ -319,6 +743,11 @@ async def async_setup_coordinator(
         api_client=api_client,
         serial_number=serial_number,
         network_uid=network_uid,
+        poll_interval=poll_interval,
+    )
+
+    _LOGGER.debug(
+        "Coordinator for %s polling every %ss", serial_number, poll_interval
     )
 
     # Perform first refresh to populate coordinator data
