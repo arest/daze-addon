@@ -1,15 +1,15 @@
 # Daze Wallbox
 
-[![Version](https://img.shields.io/github/v/tag/tarrinho/daze-addon?label=version&sort=semver&color=blue)](https://github.com/tarrinho/daze-addon/releases)
+[![Version](https://img.shields.io/github/v/tag/arest/daze-addon?label=version&sort=semver&color=blue)](https://github.com/arest/daze-addon/releases)
 [![HA Community](https://img.shields.io/badge/Home%20Assistant-2025.x-41BDF5?logo=homeassistant)](https://www.home-assistant.io/)
-[![HACS Validation](https://github.com/tarrinho/daze-addon/actions/workflows/validate.yaml/badge.svg)](https://github.com/tarrinho/daze-addon/actions/workflows/validate.yaml)
-[![GitHub](https://img.shields.io/github/license/tarrinho/daze-addon)](LICENSE)
+[![HACS Validation](https://github.com/arest/daze-addon/actions/workflows/validate.yaml/badge.svg)](https://github.com/arest/daze-addon/actions/workflows/validate.yaml)
+[![GitHub](https://img.shields.io/github/license/arest/daze-addon)](LICENSE)
 
 Home Assistant integration for **Daze WallBox EV chargers**. Monitor charging metrics in real time and control your wallbox directly from your HA dashboard — no separate app required.
 
 Daze wallboxes are managed through the [Daze web portal](https://webportal.dazeservice.com). This integration bridges the gap, bringing your wallbox into Home Assistant alongside all your other smart home devices.
 
-> **This is a fork.** The original integration was created by **Andrea Restello** ([@arest](https://github.com/arest)) at [arest/daze-addon](https://github.com/arest/daze-addon), and all of the original design and implementation is his work. This fork, maintained by **Pedro Tarrinho** ([@tarrinho](https://github.com/tarrinho)), adds fixes found while running it against a DT01 charger — see [Changes in this fork](#changes-in-this-fork).
+> This integration was created and is maintained by **Andrea Restello** ([@arest](https://github.com/arest)). Thanks to **Pedro Tarrinho** ([@tarrinho](https://github.com/tarrinho)) for major bug-fix contributions originally developed against a DT01 charger — see [Contribution highlights](#contribution-highlights).
 
 ---
 
@@ -36,7 +36,7 @@ Daze wallboxes are managed through the [Daze web portal](https://webportal.dazes
 3. Click the three dots in the top-right corner and select **Custom repositories**
 4. Add this repository URL:
    ```
-   https://github.com/tarrinho/daze-addon
+   https://github.com/arest/daze-addon
    ```
 5. Select **Integration** as the category and click **Add**
 6. Close the dialog — the Daze Wallbox integration should now appear in HACS
@@ -453,15 +453,15 @@ The integration is validated with:
 This integration was created by **Andrea Restello** ([@arest](https://github.com/arest)).
 The upstream project is [arest/daze-addon](https://github.com/arest/daze-addon).
 
-Everything this fork does rests on his work: the integration architecture, the
-config flow, the entity model, the sensor catalog and the API client were all
-written upstream. He also reverse-engineered the Daze web API, which is not
-publicly documented — that is the hard part, and none of what follows would
-exist without it.
+Everything this project does rests on his work: the integration architecture,
+config flow, entity model, sensor catalog and API client were all written
+upstream. He also reverse-engineered the Daze web API, which is not publicly
+documented — that is the hard part, and none of what follows would exist
+without it.
 
-### Changes in this fork
+### Contribution highlights
 
-Maintained by **Pedro Tarrinho** ([@tarrinho](https://github.com/tarrinho)).
+The following fixes were contributed by **Pedro Tarrinho** ([@tarrinho](https://github.com/tarrinho)) and merged here.
 
 Every change below was found by running the integration against a real DT01
 wallbox and measuring the API's actual responses, rather than by reading the
@@ -512,8 +512,7 @@ code alone.
 - Add diagnostic tools under `tools/` for reproducing each API call outside
   Home Assistant, and tests that use captured API responses as fixtures.
 
-These are bug fixes to someone else's design, not a redesign. If the upstream
-project adopts them, this fork becomes unnecessary.
+These are bug fixes to the existing design, not a redesign.
 
 ### License
 
