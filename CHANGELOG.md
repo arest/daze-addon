@@ -2,10 +2,11 @@
 
 All notable changes to this fork are documented here.
 
-This project is based on
-[arest/daze-addon](https://github.com/arest/daze-addon), created by Andrea
-Restello. Fork maintenance and the changes listed below are by Pedro Tarrinho
-unless otherwise noted.
+This project was created by Andrea Restello at
+[arest/daze-addon](https://github.com/arest/daze-addon).
+
+Some entries below include merged external bug-fix contributions unless
+otherwise noted.
 
 ## [0.2.3] - 2026-10-04
 
@@ -127,12 +128,12 @@ unless otherwise noted.
 
 - Initial upstream release by Andrea Restello.
 
-[0.2.3]: https://github.com/tarrinho/daze-addon/compare/v0.2.2...v0.2.3
-[0.2.2]: https://github.com/tarrinho/daze-addon/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/tarrinho/daze-addon/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/tarrinho/daze-addon/compare/v0.1.6...v0.2.0
-[0.1.6]: https://github.com/tarrinho/daze-addon/compare/v0.1.3...v0.1.6
-[0.1.3]: https://github.com/tarrinho/daze-addon/compare/v0.1.2...v0.1.3
-[0.1.2]: https://github.com/tarrinho/daze-addon/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/tarrinho/daze-addon/compare/v0.1.0...v0.1.1
+[0.2.3]: https://github.com/arest/daze-addon/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/arest/daze-addon/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/arest/daze-addon/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/arest/daze-addon/compare/v0.1.6...v0.2.0
+[0.1.6]: https://github.com/arest/daze-addon/compare/v0.1.3...v0.1.6
+[0.1.3]: https://github.com/arest/daze-addon/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/arest/daze-addon/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/arest/daze-addon/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/arest/daze-addon/releases/tag/v0.1.0
