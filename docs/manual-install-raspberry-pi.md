@@ -8,7 +8,7 @@ Instructions for manually installing the Daze Wallbox Home Assistant integration
 
 - Raspberry Pi running **Home Assistant OS** or **Home Assistant Supervised**
 - SSH access or Samba share enabled
-- [Daze web portal](https://webportal.dazeservice.com) account with **Access Token** and **Refresh Token**
+- [Daze web portal](https://webportal.dazeservice.com) account with **Access Token** and **Refresh Token** — see [Getting your tokens](../README.md#getting-your-tokens) for where to find them in your browser
 
 ---
 
@@ -82,7 +82,8 @@ ha core restart
 
 1. Go to **Settings → Devices & services**
 2. Click **Add integration** → search for **Daze Wallbox**
-3. Enter your **Access Token** and **Refresh Token**
+3. Enter your **Access Token** and **Refresh Token** (see
+   [Getting your tokens](../README.md#getting-your-tokens))
 4. Select your network → confirm → done
 
 ---

@@ -7,7 +7,7 @@
           "access_token": "Access Token",
           "refresh_token": "Refresh Token"
         },
-        "description": "Enter your Daze access token and refresh token.\n\nYou can obtain these from the Daze web portal (webportal.dazeservice.com) or the developer console."
+        "description": "Enter your Daze access token and refresh token.\n\nThe Daze portal does not show these in its UI. After signing in at webportal.dazeservice.com, read them from your browser's local storage. See the README section \"Getting your tokens\" for step-by-step instructions."
       },
       "network": {
         "data": {

@@ -52,12 +52,73 @@ Daze wallboxes are managed through the [Daze web portal](https://webportal.dazes
 
 ## Configuration
 
+### Getting your tokens
+
+The Daze web portal does not show tokens anywhere in its UI, and there is
+no separate Daze developer console to sign in to. Signing in creates the
+tokens, and the portal keeps them in your browser's local storage. You
+read them from your own browser:
+
+1. Sign in at [webportal.dazeservice.com](https://webportal.dazeservice.com).
+2. Open your browser's developer tools:
+   - **Chrome / Edge:** `F12`, or `Ctrl+Shift+I` (`Cmd+Option+I` on macOS)
+   - **Firefox:** `Ctrl+Shift+I` (`Cmd+Option+I` on macOS)
+   - **Safari:** first enable **Develop → Show Web Inspector** in Settings
+3. Open local storage:
+   - **Chrome / Edge:** **Application → Storage → Local Storage →**
+     `https://webportal.dazeservice.com`
+   - **Firefox:** **Storage → Local Storage →**
+     `https://webportal.dazeservice.com`
+   - **Safari:** **Storage → Local Storage →**
+     `https://webportal.dazeservice.com`
+4. Find the key ending in `.LastAuthUser`. Its value is your portal
+   username. The full key looks like this:
+   ```
+   CognitoIdentityServiceProvider.4m0rp7oqarbrc3hn67ivvonba8.LastAuthUser
+   ```
+5. Copy the values of the two keys that start with the same prefix and
+   end in `.<username>.accessToken` and `.<username>.refreshToken`. For
+   the username `you@example.com`, they look like this:
+   ```
+   CognitoIdentityServiceProvider.4m0rp7oqarbrc3hn67ivvonba8.you@example.com.accessToken
+   CognitoIdentityServiceProvider.4m0rp7oqarbrc3hn67ivvonba8.you@example.com.refreshToken
+   ```
+6. Paste each value into the matching field in Home Assistant. Copy the
+   whole value, without the quotes a developer tools view may add.
+
+If you prefer not to hunt through the storage table, run this in the
+browser console while the signed-in portal tab is open. It prints both
+tokens:
+
+```js
+(() => {
+  const prefix = "CognitoIdentityServiceProvider.4m0rp7oqarbrc3hn67ivvonba8.";
+  const username = localStorage.getItem(prefix + "LastAuthUser");
+  const accessToken = localStorage.getItem(`${prefix}${username}.accessToken`);
+  const refreshToken = localStorage.getItem(`${prefix}${username}.refreshToken`);
+  if (!username || !accessToken || !refreshToken) {
+    throw new Error("Sign in at webportal.dazeservice.com in this tab first.");
+  }
+  console.log("accessToken:", accessToken);
+  console.log("refreshToken:", refreshToken);
+})();
+```
+
+The access token is short-lived — about an hour — so copy it immediately
+before starting setup. The refresh token lasts much longer; it is what
+keeps the integration running without asking you to sign in again.
+
+> **Treat both tokens as passwords.** Anyone holding the refresh token
+> can reach your wallbox. Do not paste them into GitHub issues, chats, or
+> screenshots. If a token has been exposed, sign out of the portal to end
+> that session, then copy a fresh pair.
+
+### Setup
+
 1. Go to **Settings → Devices & services**
 2. Click **Add integration** and search for **Daze Wallbox**
-3. Enter your Daze **Access Token** and **Refresh Token**
-
-   > **Where to find your tokens:** These are obtained from the Daze web portal ([webportal.dazeservice.com](https://webportal.dazeservice.com)) or the developer console. The integration uses a personal access token model — not email/password.
-
+3. Enter your Daze **Access Token** and **Refresh Token** (see
+   [Getting your tokens](#getting-your-tokens) above)
 4. Click **Submit** — the integration validates your tokens
 5. Select your **network** (installation location) from the list
 6. Review the confirmation screen with your wallbox details
@@ -379,7 +440,12 @@ automation:
 ## Troubleshooting
 
 ### "Invalid tokens" during setup
-Make sure you've copied the full access token and refresh token — they are long strings. Tokens must be active (not expired). Obtain fresh tokens from the Daze web portal.
+Make sure you copied the full values of the `accessToken` and
+`refreshToken` entries, not the `idToken` and not the `.LastAuthUser`
+value. Tokens must be active (not expired), so copy a fresh pair from the
+portal just before setup — see [Getting your tokens](#getting-your-tokens).
+If it still fails, `python3 tools/check_daze_tokens.py` reports which
+token was rejected without printing either one.
 
 ### Integration shows "unavailable"
 - Check your internet connection — the Daze API is cloud-based
