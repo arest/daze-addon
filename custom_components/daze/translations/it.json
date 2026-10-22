@@ -7,7 +7,7 @@
           "access_token": "Token di accesso",
           "refresh_token": "Token di aggiornamento"
         },
-        "description": "Inserisci il token di accesso e il token di aggiornamento di Daze.\n\nPuoi ottenerli dal portale web Daze (webportal.dazeservice.com) o dalla console sviluppatore."
+        "description": "Inserisci il token di accesso e il token di aggiornamento di Daze.\n\nIl portale Daze non li mostra nell'interfaccia. Dopo aver effettuato l'accesso su webportal.dazeservice.com, leggili dall'archivio locale del browser. Vedi la sezione \"Getting your tokens\" del README per le istruzioni."
       },
       "network": {
         "data": {
