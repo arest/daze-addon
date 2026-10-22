@@ -22,7 +22,7 @@ directly.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 # EVSE state values confirmed against live hardware:
@@ -516,7 +516,7 @@ def last_reported_at(data: dict[str, Any] | None) -> datetime | None:
         return None
 
     try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw)
     except ValueError:
         return None
 
@@ -525,7 +525,7 @@ def last_reported_at(data: dict[str, Any] | None) -> datetime | None:
     # exception would block the controls entirely. Assume UTC, which
     # is what the API sends when it does include an offset.
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
+        return parsed.replace(tzinfo=UTC)
 
     return parsed
 
@@ -554,7 +554,7 @@ def charger_offline_reason(data: dict[str, Any] | None) -> str | None:
 
     reported = last_reported_at(data)
     if reported is not None:
-        age = (datetime.now(timezone.utc) - reported).total_seconds()
+        age = (datetime.now(UTC) - reported).total_seconds()
         if age > STALE_REPORT_SECONDS:
             return (
                 f"the charger last reported {int(age // 60)} minutes ago, "

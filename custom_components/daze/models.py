@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 # ------------------------------------------------------------------
@@ -64,11 +64,11 @@ def _parse_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, tz=timezone.utc)
+        return datetime.fromtimestamp(value, tz=UTC)
 
     # Try ISO 8601 string parsing
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return datetime.fromisoformat(str(value))
     except (ValueError, TypeError):
         pass
 

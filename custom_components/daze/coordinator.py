@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -579,7 +579,7 @@ class DazeDataUpdateCoordinator(
             fields["last_session_duration"] = delta.total_seconds() / 60.0
         elif last.start_time:
             # In-progress session — duration since start
-            delta = datetime.now(timezone.utc) - last.start_time
+            delta = datetime.now(UTC) - last.start_time
             fields["last_session_duration"] = delta.total_seconds() / 60.0
 
         # Compute lifetime energy from all sessions

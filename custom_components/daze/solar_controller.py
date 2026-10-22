@@ -13,7 +13,6 @@ without needing a flag that could be wrong.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -1039,7 +1038,7 @@ class SolarController:
         except ApiError as err:
             _LOGGER.warning("API error %s: %s", description, err)
             return False
-        except asyncio.TimeoutError as err:
+        except TimeoutError as err:
             _LOGGER.warning("Timed out %s: %s", description, err)
             return False
 

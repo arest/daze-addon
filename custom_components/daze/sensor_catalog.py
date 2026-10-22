@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 type ValueFn = Callable[[dict[str, Any]], Any | None]
@@ -88,22 +88,22 @@ def _as_datetime(value: Any) -> datetime | None:
     caused.
     """
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
 
     if isinstance(value, (int, float)):
         # Milliseconds if it is far too large to be seconds.
         seconds = value / 1000 if value > 1e11 else value
         try:
-            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+            return datetime.fromtimestamp(seconds, tz=UTC)
         except (OverflowError, OSError, ValueError):
             return None
 
     if isinstance(value, str) and value.strip():
         try:
-            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(value.strip())
         except ValueError:
             return None
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
     return None
 
